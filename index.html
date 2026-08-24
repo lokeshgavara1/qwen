@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>⚡ Qwen Chat — CUTM AI Gateway</title>
+<link rel="stylesheet" href="css/main.css">
+<link rel="stylesheet" href="css/chat.css">
+<link rel="stylesheet" href="css/responsive.css">
+</head>
+<body>
+<div class="app-shell" id="app-shell">
+
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      ⚡ Qwen Chat
+    </div>
+
+    <button type="button" class="new-chat-btn" id="new-chat-btn">
+      <span>＋</span> New chat
+    </button>
+
+    <div class="conv-list-label">Recent</div>
+    <div class="conv-list" id="conv-list">
+      <p class="conv-list-empty" id="conv-list-empty">No conversations yet.</p>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-status">
+        <span class="status-dot" id="connection-dot"></span>
+        <span id="connection-text">Checking connection…</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main-panel">
+    <header class="topbar">
+      <button type="button" class="icon-btn sidebar-toggle" id="sidebar-toggle" title="Menu">☰</button>
+      <div class="topbar-title">Qwen Chat</div>
+      <div class="topbar-actions">
+        <button type="button" class="icon-btn" id="export-json-btn" title="Export chat as JSON">⬇️</button>
+        <button type="button" class="icon-btn" id="export-txt-btn" title="Export chat as TXT">📄</button>
+        <button type="button" class="icon-btn" id="clear-chat-btn" title="Delete this conversation">🗑️</button>
+        <button type="button" class="icon-btn" id="shortcuts-toggle" title="Keyboard shortcuts">❓</button>
+      </div>
+    </header>
+
+    <div class="chat-scroll">
+      <div class="chat-scroll-inner">
+
+        <div class="welcome" id="welcome">
+          <div class="welcome-icon">⚡</div>
+          <h1>What can I help with?</h1>
+          <p>Chat, coding help, reasoning, or image analysis — powered by mistral:7b and qwen2.5vl:7b.</p>
+          <div class="suggestion-grid">
+            <button type="button" class="suggestion-card" data-prompt="Explain how async/await works in JavaScript, with a short example.">
+              <span class="suggestion-title">💻 Explain async/await</span>
+              <span class="suggestion-sub">Coding · JavaScript concept</span>
+            </button>
+            <button type="button" class="suggestion-card" data-prompt="What's the difference between TCP and UDP?">
+              <span class="suggestion-title">🧠 TCP vs UDP</span>
+              <span class="suggestion-sub">Reasoning · Networking basics</span>
+            </button>
+            <button type="button" class="suggestion-card" data-prompt="Give me 5 healthy breakfast ideas I can make in under 10 minutes.">
+              <span class="suggestion-title">🍳 Breakfast ideas</span>
+              <span class="suggestion-sub">Chat · Quick suggestions</span>
+            </button>
+            <button type="button" class="suggestion-card" data-prompt="Write a Python function that checks if a string is a palindrome.">
+              <span class="suggestion-title">🐍 Palindrome function</span>
+              <span class="suggestion-sub">Coding · Python</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer-inner">
+        <form id="chat-form">
+          <div class="composer">
+            <textarea id="chat-input" rows="1" placeholder="Message Qwen Chat…" maxlength="4000"></textarea>
+            <div class="composer-toolbar">
+              <select id="model-select" class="model-select" title="Model"></select>
+              <button type="submit" id="send-btn" class="btn send-btn" title="Send">➤</button>
+            </div>
+          </div>
+        </form>
+        <div class="composer-hint">
+          <span>Enter to send · Shift+Enter for new line</span>
+          <span id="char-counter">0 / 4000</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="shortcuts-panel" class="shortcuts-panel hidden">
+    <h3>Keyboard Shortcuts</h3>
+    <dl>
+      <dt>Enter</dt><dd>Send message</dd>
+      <dt>Shift+Enter</dt><dd>New line</dd>
+      <dt>?</dt><dd>Toggle this panel</dd>
+    </dl>
+  </div>
+
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

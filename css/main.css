@@ -1,0 +1,376 @@
+/* Global styles, design tokens, and the app shell (sidebar + main panel). */
+
+:root {
+  --color-primary: #00b4d8;
+  --color-primary-dark: #0091ad;
+  --color-bg: #1b1b1f;          /* sidebar — deepest layer, warm charcoal */
+  --color-bg-main: #202024;     /* main content */
+  --color-bg-elevated: #26262b; /* topbar, composer, cards */
+  --color-bg-card: #2d2d33;     /* cards, popovers, inputs */
+  --color-bg-hover: #37373f;
+  --color-border: #414149;
+  --color-text: #ececef;
+  --color-text-dim: #a3a3ad;
+  --color-success: #00d084;
+  --color-error: #ff6b6b;
+
+  --sidebar-width: 264px;
+
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+  --space-5: 40px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-pill: 26px;
+
+  --transition: 0.2s ease;
+  --font-body: 'Segoe UI', Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  background: var(--color-bg-main);
+  color: var(--color-text);
+  line-height: 1.55;
+  overflow: hidden;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+  transition: color var(--transition);
+}
+a:hover {
+  color: var(--color-primary-dark);
+  text-decoration: underline;
+}
+
+h1, h2, h3 {
+  font-weight: 700;
+  margin: 0 0 var(--space-2);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Thin, unobtrusive scrollbars throughout the app */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ==========================================================================
+   App shell: fixed-height sidebar + main panel
+   ========================================================================== */
+
+.app-shell {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+}
+
+/* ---- Sidebar ---- */
+.sidebar {
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2);
+  gap: var(--space-2);
+  overflow: hidden;
+  transition: transform var(--transition), width var(--transition), padding var(--transition), border-color var(--transition);
+  z-index: 40;
+}
+
+/* Desktop/tablet: toggling collapses the sidebar to zero width in place,
+   rather than the mobile off-canvas overlay below. */
+@media (min-width: 768px) {
+  .app-shell.sidebar-collapsed .sidebar {
+    flex-basis: 0;
+    width: 0;
+    padding-left: 0;
+    padding-right: 0;
+    border-right-color: transparent;
+  }
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  padding: var(--space-1) 4px;
+}
+.sidebar-brand-sub {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--color-text-dim);
+}
+
+.new-chat-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  border-radius: var(--radius-md);
+  padding: 10px var(--space-2);
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: background var(--transition), border-color var(--transition);
+}
+.new-chat-btn:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-primary);
+}
+
+/* ---- Conversation history list ---- */
+.conv-list-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-dim);
+  padding: var(--space-1) 8px 2px;
+}
+
+.conv-list {
+  flex: 1;
+  min-height: 40px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.conv-list-empty {
+  color: var(--color-text-dim);
+  font-size: 0.8rem;
+  padding: 6px 8px;
+  margin: 0;
+}
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--color-text-dim);
+  transition: background var(--transition), color var(--transition);
+}
+.conv-item:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+.conv-item.active {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+.conv-item.active .conv-item-title {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.conv-item-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.85rem;
+}
+
+.conv-delete-btn {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  font-size: 0.78rem;
+  padding: 3px 5px;
+  border-radius: 4px;
+  opacity: 0.55;
+  transition: opacity var(--transition), background var(--transition), color var(--transition);
+}
+.conv-delete-btn:hover {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--color-error);
+}
+
+/* Hide-until-hover only makes sense with a real mouse; on touchscreens
+   :hover never fires reliably, so keep the button visible there. */
+@media (hover: hover) and (pointer: fine) {
+  .conv-delete-btn {
+    opacity: 0;
+  }
+  .conv-item:hover .conv-delete-btn {
+    opacity: 1;
+  }
+}
+
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--color-text-dim);
+  padding: 4px;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-error);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.15);
+}
+.status-dot.online {
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px rgba(0, 208, 132, 0.15);
+}
+
+/* Mobile drawer backdrop (hidden on desktop; shown via responsive.css) */
+.sidebar-backdrop {
+  display: none;
+}
+
+/* ---- Main panel ---- */
+.main-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-bg-main);
+}
+
+.topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.topbar-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.topbar-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--color-text-dim);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.icon-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+
+/* ==========================================================================
+   Shared form controls & buttons
+   ========================================================================== */
+
+textarea {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+  font-family: inherit;
+  font-size: 0.95rem;
+  transition: border-color var(--transition);
+}
+textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.btn {
+  background: var(--color-primary);
+  color: #04121a;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  font-weight: 600;
+  transition: background var(--transition), transform var(--transition);
+}
+.btn:hover { background: var(--color-primary-dark); }
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Toasts */
+.toast-container {
+  position: fixed;
+  bottom: var(--space-3);
+  right: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  z-index: 1000;
+}
+.toast {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--transition), transform var(--transition);
+}
+.toast-visible { opacity: 1; transform: translateY(0); }
+.toast-success { border-color: var(--color-success); color: var(--color-success); }
+.toast-error { border-color: var(--color-error); color: var(--color-error); }
+
+.hidden { display: none !important; }
