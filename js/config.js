@@ -2,7 +2,7 @@
 // Matches the live gateway implementation (qwen_lb.py).
 
 export const APP_NAME = 'CUTM AI Gateway Chat Frontend';
-export const GATEWAY_URL = 'http://172.16.8.4:8000';
+export const GATEWAY_URL = 'https://172.16.8.4:8000';
 export const TARGET_HOST = 'qwen.cutm.ac.in';
 
 export const AUTO_MODEL = 'auto';
