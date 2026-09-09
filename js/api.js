@@ -57,12 +57,20 @@ export async function generateResponse(prompt, {
   const payload = { prompt, images, stream };
   if (model) payload.model = model; // omit for "auto" so the gateway's intent detection picks it
 
-  const res = await fetch(`${GATEWAY_URL}${ENDPOINTS.GENERATE}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal,
-  });
+  let res;
+  try {
+    res = await fetch(`${GATEWAY_URL}${ENDPOINTS.GENERATE}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new GatewayError('Request timed out. Is the gateway running?');
+    }
+    throw new GatewayError(`Network error connecting to gateway at ${GATEWAY_URL}: ${err.message}`);
+  }
 
   if (!res.ok) {
     const errData = safeJsonParse(await res.text().catch(() => ''));

@@ -2,7 +2,26 @@
 // Matches the live gateway implementation (qwen_lb.py).
 
 export const APP_NAME = 'CUTM AI Gateway Chat Frontend';
-export const GATEWAY_URL = 'https://172.16.8.4:8000';
+
+// Auto-detect gateway URL with support for localhost, custom override, and university network
+export const GATEWAY_URL = (() => {
+  const custom = typeof localStorage !== 'undefined' ? localStorage.getItem('aig_gateway_url') : null;
+  if (custom) return custom;
+
+  if (typeof window !== 'undefined') {
+    // If running directly on the gateway port 8000, use same origin
+    if (window.location.port === '8000') {
+      return window.location.origin;
+    }
+    // If running on local dev server (e.g., :3000, :5500)
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return 'http://localhost:8000';
+    }
+  }
+  // Default to gateway internal IP over HTTP
+  return 'http://172.16.8.4:8000';
+})();
+
 export const TARGET_HOST = 'qwen.cutm.ac.in';
 
 export const AUTO_MODEL = 'auto';
@@ -36,7 +55,7 @@ export const STORAGE_KEYS = {
   CONVERSATIONS: 'aig_conversations',
   ACTIVE_CONVERSATION: 'aig_active_conversation',
   SETTINGS: 'aig_settings',
-  LEGACY_CHAT_HISTORY: 'aig_chat_history', // pre-conversations single-thread history, migrated on first load
+  LEGACY_CHAT_HISTORY: 'aig_chat_history',
 };
 
 export const ENDPOINTS = {
