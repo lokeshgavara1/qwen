@@ -13,6 +13,15 @@ class GatewayError extends Error {
   }
 }
 
+/** Thrown specifically when the gateway returns HTTP 429. */
+class RateLimitError extends GatewayError {
+  constructor(message, retryAfter = null) {
+    super(message, 429);
+    this.name = 'RateLimitError';
+    this.retryAfter = retryAfter; // seconds until retry is safe
+  }
+}
+
 async function request(path, { method = 'GET', body, signal, timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -51,17 +60,22 @@ export async function generateResponse(prompt, {
   stream = true,
   images = [],
   model = null,
+  conversationId = null,
   onToken = null,
   signal = null,
 } = {}) {
   const payload = { prompt, images, stream };
   if (model) payload.model = model; // omit for "auto" so the gateway's intent detection picks it
+  if (conversationId) payload.conversation_id = conversationId;
 
   let res;
   try {
     res = await fetch(`${GATEWAY_URL}${ENDPOINTS.GENERATE}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(conversationId ? { 'X-Conversation-ID': conversationId } : {}),
+      },
       body: JSON.stringify(payload),
       signal,
     });
@@ -74,17 +88,27 @@ export async function generateResponse(prompt, {
 
   if (!res.ok) {
     const errData = safeJsonParse(await res.text().catch(() => ''));
+    if (res.status === 429) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') || errData?.retry_after || '60', 10);
+      const errType    = errData?.error === 'quota_exceeded' ? 'quota' : 'burst';
+      const msg = errType === 'quota'
+        ? `Hourly quota exceeded. Please wait ${retryAfter}s before trying again.`
+        : `Rate limit reached. Please wait ${retryAfter}s before trying again.`;
+      throw new RateLimitError(msg, retryAfter);
+    }
     throw new GatewayError(errData?.error || `Gateway responded with ${res.status}`, res.status);
   }
 
   const server = res.headers.get('X-Server');
   const servedModel = res.headers.get('X-Model');
+  const returnedConvId = res.headers.get('X-Conversation-ID');
 
   if (!stream || !res.body) {
     const data = await res.json();
     return {
       text: data.response ?? '',
       raw: data,
+      conversationId: data.conversation_id || returnedConvId || conversationId,
       server: data._server || server,
       model: data._model || servedModel,
       cached: !!data._cached,
@@ -123,6 +147,7 @@ export async function generateResponse(prompt, {
   return {
     text: fullText,
     raw: final,
+    conversationId: returnedConvId || conversationId,
     server,
     model: servedModel,
     cached: false,
@@ -135,4 +160,12 @@ export function getHealth() {
   return request(ENDPOINTS.HEALTH);
 }
 
-export { GatewayError };
+/**
+ * Fetches usage/quota stats for the current identity.
+ * Returns the /api/usage JSON response.
+ */
+export function getUsage() {
+  return request(ENDPOINTS.USAGE);
+}
+
+export { GatewayError, RateLimitError };

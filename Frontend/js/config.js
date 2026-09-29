@@ -60,5 +60,6 @@ export const STORAGE_KEYS = {
 
 export const ENDPOINTS = {
   GENERATE: '/api/generate',
-  HEALTH: '/health',
+  HEALTH:   '/health',
+  USAGE:    '/api/usage',
 };

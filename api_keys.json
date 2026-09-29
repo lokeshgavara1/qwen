@@ -1,0 +1,62 @@
+{
+  "sk_admin_audit_secret_key_999": {
+    "name": "admin",
+    "active": true,
+    "expires_at": null,
+    "usage_count": 0
+  },
+  "sk_user_audit_secret_key_111": {
+    "name": "regular_dev",
+    "active": true,
+    "expires_at": null,
+    "usage_count": 0
+  },
+  "sk_test_conv_user_key": {
+    "name": "conv_tester",
+    "role": "user",
+    "active": true,
+    "created_at": "2026-09-16T15:08:46.502783",
+    "expires_at": null,
+    "usage_count": 1,
+    "last_used": "2026-09-16T15:08:46.568730"
+  },
+  "sk_test_admin_key_sec_001": {
+    "name": "admin",
+    "role": "admin",
+    "active": true,
+    "created_at": "2026-09-16T15:08:49.176388",
+    "expires_at": "2026-10-16T15:08:49.176392"
+  },
+  "sk_test_regular_user_sec_002": {
+    "name": "developer_alice",
+    "role": "user",
+    "active": true,
+    "created_at": "2026-09-16T15:08:49.176398",
+    "expires_at": "2026-10-16T15:08:49.176398"
+  },
+  "sk_test_expired_key_sec_003": {
+    "name": "expired_user",
+    "role": "admin",
+    "active": true,
+    "created_at": "2026-08-07T15:08:49.176400",
+    "expires_at": "2026-09-06T15:08:49.176402"
+  },
+  "sk_eL8GZtbbi7cK-ms3w45_QVlbcxIyEZsh1Xohk4oqFtw": {
+    "name": "new_team_key",
+    "role": "user",
+    "created_at": "2026-09-16T15:08:49.119632",
+    "expires_at": "2026-10-16T15:08:49.119624",
+    "active": true,
+    "usage_count": 0,
+    "last_used": null
+  },
+  "sk_PoYfYLZ0JGZRpv7MCKmEkmiVAg_OVxGDgPnUBOIqJdw": {
+    "name": "audited_key",
+    "role": "user",
+    "created_at": "2026-09-16T15:08:49.218276",
+    "expires_at": "2027-09-16T15:08:49.218266",
+    "active": true,
+    "usage_count": 0,
+    "last_used": null
+  }
+}

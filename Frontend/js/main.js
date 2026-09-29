@@ -3,7 +3,7 @@
 import {
   STORAGE_KEYS, CONNECTION_CHECK_MS, MAX_MESSAGE_LENGTH, MODEL_OPTIONS, AUTO_MODEL,
 } from './config.js';
-import { getHealth } from './api.js';
+import { getHealth, getUsage } from './api.js';
 import { Chat } from './chat.js';
 import * as store from './conversations.js';
 import { safeJsonParse, escapeHtml } from './utils.js';
@@ -31,6 +31,8 @@ document.addEventListener('DOMContentLoaded', () => {
     exportTxtBtn: document.getElementById('export-txt-btn'),
     connectionDot: document.getElementById('connection-dot'),
     connectionText: document.getElementById('connection-text'),
+    usageVal: document.getElementById('usage-val'),
+    usageBarFill: document.getElementById('usage-bar-fill'),
     sidebarToggle: document.getElementById('sidebar-toggle'),
     sidebarBackdrop: document.getElementById('sidebar-backdrop'),
     shortcutsToggle: document.getElementById('shortcuts-toggle'),
@@ -126,9 +128,13 @@ document.addEventListener('DOMContentLoaded', () => {
     updateCharCounter();
     autoResize();
     els.sendBtn.disabled = true;
-    await chat.sendMessage(text);
-    els.sendBtn.disabled = false;
-    els.input.focus();
+    try {
+      await chat.sendMessage(text);
+    } finally {
+      els.sendBtn.disabled = false;
+      els.input.focus();
+      updateUsage();
+    }
   }
 
   els.form.addEventListener('submit', (e) => {
@@ -228,7 +234,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // --- Connection status ---------------------------------------------------------
+  // --- Connection & Usage status ---------------------------------------------------------
+  async function updateUsage() {
+    try {
+      const usage = await getUsage();
+      const used = usage.requests_last_hour ?? 0;
+      const limit = usage.hourly_limit ?? 20;
+      const pct = Math.min(100, Math.round((used / limit) * 100));
+
+      if (els.usageVal) els.usageVal.textContent = `${used} / ${limit}`;
+      if (els.usageBarFill) {
+        els.usageBarFill.style.width = `${pct}%`;
+        els.usageBarFill.classList.toggle('usage-warn', pct >= 70 && pct < 100);
+        els.usageBarFill.classList.toggle('usage-danger', pct >= 100);
+      }
+    } catch {
+      // Quietly ignore if gateway is offline
+    }
+  }
+
   async function checkConnection() {
     try {
       const health = await getHealth();
@@ -237,6 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (els.connectionDot) els.connectionDot.classList.add('online');
       if (els.connectionText) els.connectionText.textContent = `Connected · ${onlineCount}/${total} workers`;
+      updateUsage();
     } catch {
       if (els.connectionDot) els.connectionDot.classList.remove('online');
       if (els.connectionText) els.connectionText.textContent = 'Gateway unreachable';

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Local databases & logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Sensitive credentials & SSL certs
+key.pem
+cert.pem
+.env
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

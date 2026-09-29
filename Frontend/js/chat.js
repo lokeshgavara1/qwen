@@ -1,7 +1,7 @@
 // Chat state, rendering, and message lifecycle — operates on one
 // conversation at a time, backed by the multi-conversation store.
 
-import { generateResponse, GatewayError } from './api.js';
+import { generateResponse, GatewayError, RateLimitError } from './api.js';
 import * as store from './conversations.js';
 import {
   validateInput, detectIntent, formatMessageHtml, getTimeString,
@@ -220,6 +220,7 @@ export class Chat {
       const result = await generateResponse(text, {
         stream: true,
         model: this.getModel(),
+        conversationId: this.conversationId,
         onToken: (_chunk, full) => {
           aiText = full;
           if (!liveBubble) {
@@ -233,6 +234,10 @@ export class Chat {
 
       this.removeLoadingMessage();
       if (liveBubble) liveBubble.remove();
+
+      if (result.conversationId && !this.conversationId) {
+        this.conversationId = result.conversationId;
+      }
 
       const elapsedMs = Math.round(performance.now() - startedAt);
       const aiMsg = {
@@ -253,7 +258,17 @@ export class Chat {
     } catch (err) {
       this.removeLoadingMessage();
       if (liveBubble) liveBubble.remove();
-      const message = err instanceof GatewayError ? err.message : 'Unexpected error contacting the gateway.';
+
+      let message;
+      if (err instanceof RateLimitError) {
+        const waitHint = err.retryAfter ? ` Please wait ${err.retryAfter}s.` : '';
+        message = `⏳ ${err.message}${waitHint}`;
+      } else if (err instanceof GatewayError) {
+        message = err.message;
+      } else {
+        message = 'Unexpected error contacting the gateway.';
+      }
+
       const errMsg = {
         id: crypto.randomUUID(),
         type: 'ai',
@@ -265,7 +280,7 @@ export class Chat {
       this.renderMessage(errMsg);
       this.scrollToBottom();
       this.persist();
-      showNotification(message, 'error');
+      showNotification(message, err instanceof RateLimitError ? 'warn' : 'error');
     }
   }
 
