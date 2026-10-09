@@ -1241,6 +1241,7 @@ async def evaluate_speaking_test(request: Request):
 ###############################################################################
 
 @app.post("/api/image/generate")
+@app.post("/api/generate-image")
 async def api_generate_image(request: Request):
     """
     Dedicated endpoint for generating images via Stable Diffusion v1.5.
