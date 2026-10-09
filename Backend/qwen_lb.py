@@ -650,76 +650,87 @@ async def generate(request: Request):
         body["model"] = model
 
         # ── Fast-path for Image Generation Intent ────────────────────────────
-        if intent == IMAGE_GEN or requested_model in ["stable-diffusion", "sd15", "diffusion", "image-gen"]:
-            clean_prompt = prompt
-            for prefix in FastIntentDetector.IMAGE_PREFIXES:
-                if clean_prompt.lower().startswith(prefix):
-                    clean_prompt = clean_prompt[len(prefix):].strip()
-                    break
-            for phrase in FastIntentDetector.IMAGE_PHRASES:
-                if phrase in clean_prompt.lower():
-                    idx = clean_prompt.lower().find(phrase)
-                    after = clean_prompt[idx + len(phrase):].strip()
-                    if after.lower().startswith("of "):
-                        after = after[3:].strip()
-                    if after:
-                        clean_prompt = after
-                    break
-
-            try:
-                gen_result = await image_generator.generate_image_async(
-                    prompt=clean_prompt or prompt,
-                    num_inference_steps=25,
-                    guidance_scale=7.5,
-                )
-                elapsed = gen_result["latency_ms"]
-                img_url = gen_result["image_url"]
-                formatted_md = (
-                    f"![Generated Image]({img_url})\n\n"
-                    f"**Prompt:** *{gen_result['prompt']}*\n"
-                    f"**Seed:** `{gen_result['seed']}` | **Steps:** `{gen_result['steps']}` | **Latency:** `{elapsed}ms`"
-                )
-
-                conversation_memory.set_last_response(conversation_id, f"[GENERATED IMAGE]: {gen_result['prompt']}", prompt)
-                log(f"[IMAGE_GEN] Generated '{gen_result['prompt'][:35]}...' in {elapsed}ms (seed={gen_result['seed']})")
-
-                if stream:
-                    async def img_stream():
-                        chunk_dict = {
-                            "model": "stable-diffusion-v1.5",
-                            "response": formatted_md,
-                            "done": True,
-                            "eval_count": 50,
-                            "image_url": img_url,
-                            "seed": gen_result["seed"],
-                            "latency_ms": elapsed,
-                            "conversation_id": conversation_id,
-                        }
-                        yield (json.dumps(chunk_dict) + "\n").encode("utf-8")
-
-                    return StreamingResponse(
-                        img_stream(),
-                        media_type="application/x-ndjson",
-                        headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
+        is_explicit_image_req = requested_model in ["stable-diffusion", "sd15", "diffusion", "image-gen"]
+        if intent == IMAGE_GEN or is_explicit_image_req:
+            if not image_generator.is_available():
+                if is_explicit_image_req:
+                    return JSONResponse(
+                        {"error": "Image generation engine (Stable Diffusion v1.5) is not installed on this server.", "conversation_id": conversation_id},
+                        status_code=503
                     )
                 else:
-                    return JSONResponse(
-                        content={
-                            "model": "stable-diffusion-v1.5",
-                            "response": formatted_md,
-                            "image_url": img_url,
-                            "seed": gen_result["seed"],
-                            "latency_ms": elapsed,
-                            "_intent": IMAGE_GEN,
-                            "_server": "local-diffusion",
-                            "conversation_id": conversation_id,
-                        },
-                        headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
+                    log(f"[IMAGE_GEN] Image generation requested but diffusion model weights are not loaded. Routing to LLM...")
+                    intent = CHAT
+            else:
+                clean_prompt = prompt
+                for prefix in FastIntentDetector.IMAGE_PREFIXES:
+                    if clean_prompt.lower().startswith(prefix):
+                        clean_prompt = clean_prompt[len(prefix):].strip()
+                        break
+                for phrase in FastIntentDetector.IMAGE_PHRASES:
+                    if phrase in clean_prompt.lower():
+                        idx = clean_prompt.lower().find(phrase)
+                        after = clean_prompt[idx + len(phrase):].strip()
+                        if after.lower().startswith("of "):
+                            after = after[3:].strip()
+                        if after:
+                            clean_prompt = after
+                        break
+
+                try:
+                    gen_result = await image_generator.generate_image_async(
+                        prompt=clean_prompt or prompt,
+                        num_inference_steps=25,
+                        guidance_scale=7.5,
                     )
-            except Exception as e:
-                log(f"[IMAGE_GEN ERROR] {e}")
-                STATS["failed_requests"] += 1
-                return JSONResponse({"error": f"Image generation failed: {str(e)}", "conversation_id": conversation_id}, status_code=500)
+                    elapsed = gen_result["latency_ms"]
+                    img_url = gen_result["image_url"]
+                    formatted_md = (
+                        f"![Generated Image]({img_url})\n\n"
+                        f"**Prompt:** *{gen_result['prompt']}*\n"
+                        f"**Seed:** `{gen_result['seed']}` | **Steps:** `{gen_result['steps']}` | **Latency:** `{elapsed}ms`"
+                    )
+
+                    conversation_memory.set_last_response(conversation_id, f"[GENERATED IMAGE]: {gen_result['prompt']}", prompt)
+                    log(f"[IMAGE_GEN] Generated '{gen_result['prompt'][:35]}...' in {elapsed}ms (seed={gen_result['seed']})")
+
+                    if stream:
+                        async def img_stream():
+                            chunk_dict = {
+                                "model": "stable-diffusion-v1.5",
+                                "response": formatted_md,
+                                "done": True,
+                                "eval_count": 50,
+                                "image_url": img_url,
+                                "seed": gen_result["seed"],
+                                "latency_ms": elapsed,
+                                "conversation_id": conversation_id,
+                            }
+                            yield (json.dumps(chunk_dict) + "\n").encode("utf-8")
+
+                        return StreamingResponse(
+                            img_stream(),
+                            media_type="application/x-ndjson",
+                            headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
+                        )
+                    else:
+                        return JSONResponse(
+                            content={
+                                "model": "stable-diffusion-v1.5",
+                                "response": formatted_md,
+                                "image_url": img_url,
+                                "seed": gen_result["seed"],
+                                "latency_ms": elapsed,
+                                "_intent": IMAGE_GEN,
+                                "_server": "local-diffusion",
+                                "conversation_id": conversation_id,
+                            },
+                            headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
+                        )
+                except Exception as e:
+                    log(f"[IMAGE_GEN ERROR] {e}")
+                    STATS["failed_requests"] += 1
+                    return JSONResponse({"error": f"Image generation failed: {str(e)}", "conversation_id": conversation_id}, status_code=500)
 
         # ── Conversation History & Context Linking ──────────────────────────
         prev_response = conversation_memory.get_last_response(conversation_id)
@@ -1267,6 +1278,12 @@ async def api_generate_image(request: Request):
         except Exception:
             seed = None
 
+    if not image_generator.is_available():
+        return JSONResponse(
+            {"error": "Stable Diffusion model (v1-5-pruned.safetensors) is not installed on this server."},
+            status_code=503
+        )
+
     try:
         result = await image_generator.generate_image_async(
             prompt=prompt,
@@ -1302,6 +1319,12 @@ async def api_generate_image(request: Request):
 @app.post("/v1/images/generations")
 async def openai_images_generations(request: Request):
     """OpenAI-compatible image generation endpoint."""
+    if not image_generator.is_available():
+        return JSONResponse(
+            {"error": "Stable Diffusion model (v1-5-pruned.safetensors) is not installed on this server."},
+            status_code=503
+        )
+
     try:
         body = await request.json()
     except Exception:
