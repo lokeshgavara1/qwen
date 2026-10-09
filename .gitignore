@@ -1,4 +1,4 @@
-# Python
+# Python bytecode & cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,20 +7,42 @@ __pycache__/
 env/
 venv/
 ENV/
+.venv/
 
-# Local databases & logs
+# Large Model Weights (DO NOT PUSH TO GITHUB - >100MB)
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+*.onnx
+*.h5
+*.model
+Image-Generation/*.safetensors
+Backend/Image-Generation/*.safetensors
+
+# Generated output images
+generated_images/*
+Backend/generated_images/*
+!Backend/generated_images/.gitkeep
+
+# Sensitive keys, credentials & SSL certificates
+*.pem
+key.pem
+cert.pem
+Backend/key.pem
+Backend/cert.pem
+.env
+.env.local
+
+# Databases, state & logs
 *.db
 *.sqlite
 *.sqlite3
 *.log
 
-# Sensitive credentials & SSL certs
-key.pem
-cert.pem
-.env
-
-# IDE / OS
+# IDE & OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+

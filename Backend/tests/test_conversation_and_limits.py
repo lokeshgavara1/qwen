@@ -12,13 +12,18 @@ Verifies:
 import asyncio
 from datetime import datetime
 import json
+import os
+from pathlib import Path
+import sys
 import unittest
-import httpx
 
+# Ensure Backend package is importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "Backend"))
+
+import httpx
 import qwen_lb
 from qwen_lb import app, MAX_TOKENS_BY_TYPE, estimate_tokens, ConversationMemory, conversation_memory
-import rate_limiter
-import security
 
 
 class TestConversationAndLimits(unittest.IsolatedAsyncioTestCase):
@@ -39,10 +44,6 @@ class TestConversationAndLimits(unittest.IsolatedAsyncioTestCase):
 
         # Clear conversation memory before each test
         conversation_memory.clear()
-
-        # Init DBs
-        await rate_limiter.init_db()
-        await security.init_audit_db()
 
     async def asyncTearDown(self):
         await self.client.aclose()

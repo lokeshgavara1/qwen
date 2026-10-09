@@ -13,14 +13,6 @@ class GatewayError extends Error {
   }
 }
 
-/** Thrown specifically when the gateway returns HTTP 429. */
-class RateLimitError extends GatewayError {
-  constructor(message, retryAfter = null) {
-    super(message, 429);
-    this.name = 'RateLimitError';
-    this.retryAfter = retryAfter; // seconds until retry is safe
-  }
-}
 
 async function request(path, { method = 'GET', body, signal, timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
@@ -88,14 +80,6 @@ export async function generateResponse(prompt, {
 
   if (!res.ok) {
     const errData = safeJsonParse(await res.text().catch(() => ''));
-    if (res.status === 429) {
-      const retryAfter = parseInt(res.headers.get('Retry-After') || errData?.retry_after || '60', 10);
-      const errType    = errData?.error === 'quota_exceeded' ? 'quota' : 'burst';
-      const msg = errType === 'quota'
-        ? `Hourly quota exceeded. Please wait ${retryAfter}s before trying again.`
-        : `Rate limit reached. Please wait ${retryAfter}s before trying again.`;
-      throw new RateLimitError(msg, retryAfter);
-    }
     throw new GatewayError(errData?.error || `Gateway responded with ${res.status}`, res.status);
   }
 
@@ -160,12 +144,4 @@ export function getHealth() {
   return request(ENDPOINTS.HEALTH);
 }
 
-/**
- * Fetches usage/quota stats for the current identity.
- * Returns the /api/usage JSON response.
- */
-export function getUsage() {
-  return request(ENDPOINTS.USAGE);
-}
-
-export { GatewayError, RateLimitError };
+export { GatewayError };

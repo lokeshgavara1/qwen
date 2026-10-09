@@ -21,6 +21,9 @@
     <button type="button" class="new-chat-btn" id="new-chat-btn">
       <span>＋</span> New chat
     </button>
+    <button type="button" class="new-chat-btn" id="image-studio-sidebar-btn" style="margin-top: 8px; background: linear-gradient(135deg, rgba(56,189,248,0.15), rgba(168,85,247,0.15)); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8;">
+      <span>🎨</span> Image Studio
+    </button>
 
     <div class="conv-list-label">Recent</div>
     <div class="conv-list" id="conv-list">
@@ -28,15 +31,6 @@
     </div>
 
     <div class="sidebar-footer">
-      <div class="usage-panel" id="usage-panel" title="Current hourly usage and quota">
-        <div class="usage-row">
-          <span class="usage-label">Hourly Usage</span>
-          <span class="usage-val" id="usage-val">—</span>
-        </div>
-        <div class="usage-bar-track">
-          <div class="usage-bar-fill" id="usage-bar-fill" style="width: 0%;"></div>
-        </div>
-      </div>
       <div class="sidebar-status">
         <span class="status-dot" id="connection-dot"></span>
         <span id="connection-text">Checking connection…</span>
@@ -47,8 +41,9 @@
   <div class="main-panel">
     <header class="topbar">
       <button type="button" class="icon-btn sidebar-toggle" id="sidebar-toggle" title="Menu">☰</button>
-      <div class="topbar-title">Qwen Chat</div>
+      <div class="topbar-title">⚡ Qwen AI Gateway</div>
       <div class="topbar-actions">
+        <button type="button" class="icon-btn" id="image-studio-btn" title="AI Image Studio (Stable Diffusion)" style="color: #38bdf8; font-weight: 600;">🎨 Image Studio</button>
         <button type="button" class="icon-btn" id="export-json-btn" title="Export chat as JSON">⬇️</button>
         <button type="button" class="icon-btn" id="export-txt-btn" title="Export chat as TXT">📄</button>
         <button type="button" class="icon-btn" id="clear-chat-btn" title="Delete this conversation">🗑️</button>
@@ -62,8 +57,12 @@
         <div class="welcome" id="welcome">
           <div class="welcome-icon">⚡</div>
           <h1>What can I help with?</h1>
-          <p>Chat, coding help, reasoning, or image analysis — powered by mistral:7b and qwen2.5vl:7b.</p>
+          <p>Chat, coding help, reasoning, image analysis, or <strong>AI image generation</strong> — powered by Mistral 7B, Qwen 2.5-VL, and Stable Diffusion v1.5.</p>
           <div class="suggestion-grid">
+            <button type="button" class="suggestion-card" data-prompt="Generate an image of a futuristic cyberpunk city at night with neon lights, 8k, highly detailed">
+              <span class="suggestion-title">🎨 Generate an image</span>
+              <span class="suggestion-sub">Stable Diffusion v1.5 · Text to Image</span>
+            </button>
             <button type="button" class="suggestion-card" data-prompt="Explain how async/await works in JavaScript, with a short example.">
               <span class="suggestion-title">💻 Explain async/await</span>
               <span class="suggestion-sub">Coding · JavaScript concept</span>
@@ -71,10 +70,6 @@
             <button type="button" class="suggestion-card" data-prompt="What's the difference between TCP and UDP?">
               <span class="suggestion-title">🧠 TCP vs UDP</span>
               <span class="suggestion-sub">Reasoning · Networking basics</span>
-            </button>
-            <button type="button" class="suggestion-card" data-prompt="Give me 5 healthy breakfast ideas I can make in under 10 minutes.">
-              <span class="suggestion-title">🍳 Breakfast ideas</span>
-              <span class="suggestion-sub">Chat · Quick suggestions</span>
             </button>
             <button type="button" class="suggestion-card" data-prompt="Write a Python function that checks if a string is a palindrome.">
               <span class="suggestion-title">🐍 Palindrome function</span>
@@ -116,8 +111,67 @@
     </dl>
   </div>
 
+  <!-- 🎨 Image Studio Modal -->
+  <div id="image-studio-modal" class="image-studio-modal hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(8px); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;">
+    <div style="background: #1e293b; border: 1px solid rgba(255,255,255,0.15); border-radius: 16px; width: 100%; max-width: 680px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); padding: 24px; color: #f8fafc;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 16px; margin-bottom: 20px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 1.6rem;">🎨</span>
+          <div>
+            <h2 style="font-size: 1.25rem; margin: 0; font-weight: 700; color: #38bdf8;">AI Image Studio</h2>
+            <span style="font-size: 0.8rem; color: #94a3b8;">Stable Diffusion v1.5 · CUDA GPU Accelerated</span>
+          </div>
+        </div>
+        <button type="button" id="close-image-studio-btn" style="background: transparent; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">✕</button>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <div>
+          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Prompt <span style="color: #ef4444;">*</span></label>
+          <textarea id="studio-prompt" rows="3" placeholder="A futuristic cybernetic tiger prowling through a neon forest, 8k, photorealistic..." style="width: 100%; background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 10px; color: #f8fafc; font-family: inherit; font-size: 0.9rem; resize: vertical;"></textarea>
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Negative Prompt</label>
+          <input type="text" id="studio-neg-prompt" placeholder="ugly, blurry, bad anatomy, low quality, cropped" style="width: 100%; background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 10px; color: #f8fafc; font-size: 0.85rem;" />
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div>
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Inference Steps: <span id="studio-steps-val" style="color: #38bdf8;">25</span></label>
+            <input type="range" id="studio-steps" min="10" max="40" value="25" style="width: 100%; accent-color: #38bdf8;" />
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Guidance Scale: <span id="studio-guidance-val" style="color: #38bdf8;">7.5</span></label>
+            <input type="range" id="studio-guidance" min="1" max="15" step="0.5" value="7.5" style="width: 100%; accent-color: #38bdf8;" />
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-top: 8px;">
+          <button type="button" id="studio-generate-btn" style="flex: 1; background: linear-gradient(135deg, #0284c7, #8b5cf6); border: none; border-radius: 8px; padding: 12px; font-weight: 600; color: #ffffff; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 0.95rem;">
+            <span>✨ Generate Image</span>
+          </button>
+          <button type="button" id="studio-send-chat-btn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 12px 18px; font-weight: 600; color: #38bdf8; cursor: pointer;" title="Send prompt to chat conversation">
+            💬 Send to Chat
+          </button>
+        </div>
+
+        <!-- Result Preview -->
+        <div id="studio-preview-box" style="display: none; margin-top: 16px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); background: #0f172a;">
+          <img id="studio-result-img" src="" alt="Generated image" style="width: 100%; height: auto; display: block;" />
+          <div style="padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4);">
+            <div id="studio-result-meta" style="font-size: 0.8rem; color: #94a3b8;"></div>
+            <a id="studio-download-link" href="#" download="generated_image.png" style="background: #38bdf8; color: #0f172a; padding: 6px 14px; border-radius: 6px; font-weight: 600; text-decoration: none; font-size: 0.85rem;" target="_blank">⬇ Download</a>
+          </div>
+        </div>
+
+        <div id="studio-status-msg" style="display: none; text-align: center; padding: 12px; font-size: 0.9rem; color: #38bdf8;"></div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<script type="module" src="js/main.js"></script>
+<script type="module" src="js/main.js?v=4"></script>
 </body>
 </html>

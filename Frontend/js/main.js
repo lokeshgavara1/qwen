@@ -3,7 +3,7 @@
 import {
   STORAGE_KEYS, CONNECTION_CHECK_MS, MAX_MESSAGE_LENGTH, MODEL_OPTIONS, AUTO_MODEL,
 } from './config.js';
-import { getHealth, getUsage } from './api.js';
+import { getHealth } from './api.js';
 import { Chat } from './chat.js';
 import * as store from './conversations.js';
 import { safeJsonParse, escapeHtml } from './utils.js';
@@ -31,8 +31,6 @@ document.addEventListener('DOMContentLoaded', () => {
     exportTxtBtn: document.getElementById('export-txt-btn'),
     connectionDot: document.getElementById('connection-dot'),
     connectionText: document.getElementById('connection-text'),
-    usageVal: document.getElementById('usage-val'),
-    usageBarFill: document.getElementById('usage-bar-fill'),
     sidebarToggle: document.getElementById('sidebar-toggle'),
     sidebarBackdrop: document.getElementById('sidebar-backdrop'),
     shortcutsToggle: document.getElementById('shortcuts-toggle'),
@@ -133,7 +131,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } finally {
       els.sendBtn.disabled = false;
       els.input.focus();
-      updateUsage();
     }
   }
 
@@ -234,25 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // --- Connection & Usage status ---------------------------------------------------------
-  async function updateUsage() {
-    try {
-      const usage = await getUsage();
-      const used = usage.requests_last_hour ?? 0;
-      const limit = usage.hourly_limit ?? 20;
-      const pct = Math.min(100, Math.round((used / limit) * 100));
-
-      if (els.usageVal) els.usageVal.textContent = `${used} / ${limit}`;
-      if (els.usageBarFill) {
-        els.usageBarFill.style.width = `${pct}%`;
-        els.usageBarFill.classList.toggle('usage-warn', pct >= 70 && pct < 100);
-        els.usageBarFill.classList.toggle('usage-danger', pct >= 100);
-      }
-    } catch {
-      // Quietly ignore if gateway is offline
-    }
-  }
-
+  // --- Connection status -----------------------------------------------------
   async function checkConnection() {
     try {
       const health = await getHealth();
@@ -261,11 +240,132 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (els.connectionDot) els.connectionDot.classList.add('online');
       if (els.connectionText) els.connectionText.textContent = `Connected · ${onlineCount}/${total} workers`;
-      updateUsage();
     } catch {
       if (els.connectionDot) els.connectionDot.classList.remove('online');
       if (els.connectionText) els.connectionText.textContent = 'Gateway unreachable';
     }
+  }
+
+  // --- Image Studio Modal ----------------------------------------------------
+  const studioModal = document.getElementById('image-studio-modal');
+  const openStudioBtn = document.getElementById('image-studio-btn');
+  const openStudioSidebarBtn = document.getElementById('image-studio-sidebar-btn');
+  const closeStudioBtn = document.getElementById('close-image-studio-btn');
+  const studioPrompt = document.getElementById('studio-prompt');
+  const studioNegPrompt = document.getElementById('studio-neg-prompt');
+  const studioSteps = document.getElementById('studio-steps');
+  const studioStepsVal = document.getElementById('studio-steps-val');
+  const studioGuidance = document.getElementById('studio-guidance');
+  const studioGuidanceVal = document.getElementById('studio-guidance-val');
+  const studioGenerateBtn = document.getElementById('studio-generate-btn');
+  const studioSendChatBtn = document.getElementById('studio-send-chat-btn');
+  const studioPreviewBox = document.getElementById('studio-preview-box');
+  const studioResultImg = document.getElementById('studio-result-img');
+  const studioResultMeta = document.getElementById('studio-result-meta');
+  const studioDownloadLink = document.getElementById('studio-download-link');
+  const studioStatusMsg = document.getElementById('studio-status-msg');
+
+  function openStudio() {
+    if (studioModal) {
+      studioModal.classList.remove('hidden');
+      if (studioPrompt) studioPrompt.focus();
+    }
+  }
+  function closeStudio() {
+    if (studioModal) studioModal.classList.add('hidden');
+  }
+
+  if (openStudioBtn) openStudioBtn.addEventListener('click', openStudio);
+  if (openStudioSidebarBtn) openStudioSidebarBtn.addEventListener('click', openStudio);
+  if (closeStudioBtn) closeStudioBtn.addEventListener('click', closeStudio);
+  if (studioModal) {
+    studioModal.addEventListener('click', (e) => {
+      if (e.target === studioModal) closeStudio();
+    });
+  }
+
+  if (studioSteps && studioStepsVal) {
+    studioSteps.addEventListener('input', () => {
+      studioStepsVal.textContent = studioSteps.value;
+    });
+  }
+  if (studioGuidance && studioGuidanceVal) {
+    studioGuidance.addEventListener('input', () => {
+      studioGuidanceVal.textContent = studioGuidance.value;
+    });
+  }
+
+  if (studioGenerateBtn) {
+    studioGenerateBtn.addEventListener('click', async () => {
+      const prompt = studioPrompt ? studioPrompt.value.trim() : '';
+      if (!prompt) {
+        alert('Please enter an image prompt.');
+        return;
+      }
+
+      studioGenerateBtn.disabled = true;
+      studioGenerateBtn.innerHTML = '<span>⏳ Generating on GPU...</span>';
+      if (studioStatusMsg) {
+        studioStatusMsg.style.display = 'block';
+        studioStatusMsg.style.color = '#38bdf8';
+        studioStatusMsg.textContent = 'Running Stable Diffusion v1.5 with PyTorch CUDA...';
+      }
+      if (studioPreviewBox) studioPreviewBox.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/image/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            negative_prompt: studioNegPrompt ? studioNegPrompt.value.trim() : '',
+            steps: studioSteps ? parseInt(studioSteps.value, 10) : 25,
+            guidance_scale: studioGuidance ? parseFloat(studioGuidance.value) : 7.5,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.error) {
+          throw new Error(data.error || 'Failed to generate image');
+        }
+
+        if (studioResultImg) studioResultImg.src = data.image_url;
+        if (studioDownloadLink) studioDownloadLink.href = data.image_url;
+        if (studioResultMeta) {
+          studioResultMeta.innerHTML = `Seed: <code>${data.seed}</code> · Steps: ${data.steps} · Latency: <strong>${data.latency_ms}ms</strong>`;
+        }
+        if (studioPreviewBox) studioPreviewBox.style.display = 'block';
+        if (studioStatusMsg) {
+          studioStatusMsg.style.display = 'none';
+        }
+      } catch (err) {
+        if (studioStatusMsg) {
+          studioStatusMsg.style.display = 'block';
+          studioStatusMsg.style.color = '#ef4444';
+          studioStatusMsg.textContent = `Error: ${err.message}`;
+        }
+      } finally {
+        studioGenerateBtn.disabled = false;
+        studioGenerateBtn.innerHTML = '<span>✨ Generate Image</span>';
+      }
+    });
+  }
+
+  if (studioSendChatBtn) {
+    studioSendChatBtn.addEventListener('click', () => {
+      const prompt = studioPrompt ? studioPrompt.value.trim() : '';
+      if (!prompt) {
+        alert('Please enter an image prompt first.');
+        return;
+      }
+      closeStudio();
+      if (els.input) {
+        els.input.value = `/image ${prompt}`;
+        if (els.form) {
+          els.form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        }
+      }
+    });
   }
 
   checkConnection();

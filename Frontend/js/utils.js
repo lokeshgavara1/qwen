@@ -18,6 +18,13 @@ export function detectIntent(prompt) {
   const text = (prompt || '').toLowerCase().trim();
   if (!text) return 'chat';
 
+  if (text.startsWith('/image') || text.startsWith('/img') || text.startsWith('/draw') ||
+      text.includes('generate image') || text.includes('generate an image') ||
+      text.includes('create an image') || text.includes('draw a picture') ||
+      text.includes('generate a photo') || text.includes('create a photo')) {
+    return 'image_gen';
+  }
+
   if (['def ', 'class ', 'function ', '{', '}', '```'].some((p) => text.includes(p))) {
     return 'coding';
   }
@@ -92,13 +99,34 @@ export function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// Minimal, safe formatter: escapes HTML first, then re-introduces
-// ```fenced code blocks``` and `inline code` as <code> elements.
+// Safe Markdown-like message formatter: renders generated images, code blocks, bold, italics.
 export function formatMessageHtml(text) {
-  const escaped = escapeHtml(text);
-  const withBlocks = escaped.replace(/```([\s\S]*?)```/g, (_, code) => `<pre class="code-block"><code>${code}</code></pre>`);
-  const withInline = withBlocks.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  return withInline.replace(/\n/g, '<br>');
+  if (!text) return '';
+  let str = escapeHtml(text);
+
+  // Match Markdown image syntax: ![alt](url) - supports newlines, spaces, data URIs, and URLs
+  str = str.replace(/!\[([\s\S]*?)\]\s*\(([\s\S]*?)\)/g, (match, alt, src) => {
+    const cleanSrc = (src || '').trim();
+    if (!cleanSrc) return match;
+    return `<div class="generated-image-card" style="margin: 14px 0; border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.18); background: #0f172a; max-width: 520px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);">
+      <img src="${cleanSrc}" alt="${alt || 'Generated image'}" style="width: 100%; height: auto; display: block; border-radius: 12px 12px 0 0; cursor: pointer;" onclick="window.open(this.src, '_blank')" />
+      <div style="padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; background: rgba(15,23,42,0.9); font-size: 0.85rem; border-top: 1px solid rgba(255,255,255,0.08);">
+        <span style="color: #94a3b8; font-size: 0.8rem; font-weight: 500;">🎨 Stable Diffusion v1.5</span>
+        <a href="${cleanSrc}" download="generated_image.png" style="background: linear-gradient(135deg, #0284c7, #38bdf8); color: #ffffff; padding: 4px 12px; border-radius: 6px; font-weight: 600; text-decoration: none; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 4px;" target="_blank">⬇ Download</a>
+      </div>
+    </div>`;
+  });
+
+  // Code blocks
+  str = str.replace(/```([\s\S]*?)```/g, (_, code) => `<pre class="code-block"><code>${code}</code></pre>`);
+  // Inline code
+  str = str.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // Bold
+  str = str.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Italic
+  str = str.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+  return str.replace(/\n/g, '<br>');
 }
 
 export function maskKey(key) {

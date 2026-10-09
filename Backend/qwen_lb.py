@@ -16,15 +16,19 @@ import asyncio
 import base64
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import secrets
+import shutil
 import sys
+import tempfile
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -32,9 +36,29 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 import httpx
 
-import analytics
-import rate_limiter
-import security
+import image_generator
+
+# ── Faster-Whisper STT Integration Support ─────────────────────────────────
+try:
+    import av
+    # PyAV 19.0+ compatibility shim for faster-whisper audio decoding
+    _orig_av_open = av.open
+    def _safe_av_open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return _orig_av_open(*args, **kwargs)
+    av.open = _safe_av_open
+
+    from faster_whisper import WhisperModel
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    WhisperModel = None
+    FASTER_WHISPER_AVAILABLE = False
+
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda" if FASTER_WHISPER_AVAILABLE else "cpu")
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16" if WHISPER_DEVICE == "cuda" else "int8")
+WHISPER_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", "4"))
+whisper_model: Optional[Any] = None
 
 ###############################################################################
 # CONFIGURATION & SERVERS
@@ -157,10 +181,16 @@ conversation_memory = ConversationMemory()
 ADMIN_KEY_NAME = "admin"
 
 ###############################################################################
-# API KEY MANAGEMENT
+# PATH RESOLUTION & API KEY MANAGEMENT
 ###############################################################################
 
-API_KEYS_FILE = "api_keys.json"
+BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BASE_DIR.parent if BASE_DIR.name == "Backend" else BASE_DIR
+
+API_KEYS_FILE = BASE_DIR / "api_keys.json"
+if not API_KEYS_FILE.exists() and (ROOT_DIR / "api_keys.json").exists():
+    API_KEYS_FILE = ROOT_DIR / "api_keys.json"
+
 key_lock = asyncio.Lock()
 
 def load_api_keys():
@@ -183,7 +213,7 @@ def find_api_key(potential_key: str) -> Optional[dict]:
     """Constant-time lookup supporting both hashed and plaintext stored keys."""
     if not potential_key:
         return None
-    p_hash = security.hash_key(potential_key)
+    p_hash = hashlib.sha256(potential_key.encode("utf-8")).hexdigest()
     for k, info in API_KEYS.items():
         if secrets.compare_digest(k, p_hash) or secrets.compare_digest(k, potential_key):
             return info
@@ -229,8 +259,15 @@ CHAT = "chat"
 CODING = "coding"
 VISION = "vision"
 REASONING = "reasoning"
+IMAGE_GEN = "image_gen"
 
 class FastIntentDetector:
+    IMAGE_PREFIXES = ("/image", "/img", "/draw", "draw ", "paint ", "sketch ", "/generate_image", "/generate image", "generate image", "generate an image")
+    IMAGE_PHRASES = [
+        "generate an image", "generate image", "create an image", "create a picture",
+        "draw a picture", "draw an image", "draw an ", "draw a ", "generate a photo", "create a photo",
+        "generate a drawing", "generate wallpaper", "paint a ", "paint an ", "sketch a "
+    ]
     CODING_KEYWORDS = {
         "code", "python", "java", "javascript", "c++", "cpp", "c#", "debug",
         "function", "class", "api", "database", "sql", "react", "node",
@@ -251,6 +288,13 @@ class FastIntentDetector:
         if images:
             return VISION
         text = (prompt or "").lower().strip()
+        
+        # Check image generation triggers
+        if any(text.startswith(p) for p in FastIntentDetector.IMAGE_PREFIXES):
+            return IMAGE_GEN
+        if any(phrase in text for phrase in FastIntentDetector.IMAGE_PHRASES):
+            return IMAGE_GEN
+
         if any(p in text for p in ['def ', 'class ', 'function ', '{', '}', '```']):
             return CODING
         coding_score = sum(1 for kw in FastIntentDetector.CODING_KEYWORDS if kw in text)
@@ -391,18 +435,18 @@ async def periodic_health_check():
         await asyncio.sleep(15)
 
 async def warmup_models():
-    await asyncio.sleep(1)
+    await asyncio.sleep(0.5)
     for role, state in SERVER_STATE.items():
         if not state["online"]:
             continue
-        for model in state["models"][:1]:
+        for model in state["models"]:
             try:
                 await http_client.post(
                     f"{state['url']}/api/generate",
-                    json={"model": model, "prompt": "hi", "stream": False},
-                    timeout=5.0
+                    json={"model": model, "prompt": "hi", "stream": False, "keep_alive": "24h"},
+                    timeout=30.0
                 )
-                log(f"✓ Warmed {model} on {role}")
+                log(f"[OK] Warmed {model} on {role} (keep_alive=24h)")
             except Exception as e:
                 pass
 
@@ -413,103 +457,64 @@ async def warmup_models():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log("=" * 70)
-    log("AI GATEWAY v3.0 STARTING")
+    log("AI GATEWAY STARTING")
     log("=" * 70)
 
-    # Phase 1 & Phase 8: initialise rate-limit and security audit databases
-    await rate_limiter.init_db()
-    log("Rate-limit DB initialised [OK]")
-    await security.init_audit_db()
-    log("Security Audit DB initialised [OK]")
+    # Faster-Whisper Model Startup Loading
+    global whisper_model
+    if FASTER_WHISPER_AVAILABLE:
+        try:
+            log(f"Loading Faster-Whisper STT model (size: '{WHISPER_MODEL_SIZE}', device: '{WHISPER_DEVICE}', compute: '{WHISPER_COMPUTE_TYPE}')...")
+            whisper_model = WhisperModel(
+                WHISPER_MODEL_SIZE,
+                device=WHISPER_DEVICE,
+                compute_type=WHISPER_COMPUTE_TYPE,
+                cpu_threads=WHISPER_CPU_THREADS,
+            )
+            log(f"Faster-Whisper STT model [{WHISPER_MODEL_SIZE}] loaded successfully [OK]")
+        except Exception as e:
+            log(f"[WARNING] Faster-Whisper model failed to load on startup: {e}")
+            whisper_model = None
+    else:
+        log("[INFO] 'faster-whisper' package is not installed. STT endpoints will require installation.")
 
     # Quick non-blocking initial ping
     await check_server_health_all()
     online = [r for r, s in SERVER_STATE.items() if s["online"]]
     log(f"Initial online workers ({len(online)}/{len(SERVER_STATE)}): {', '.join(online)}")
 
-    health_task  = asyncio.create_task(periodic_health_check())
-    warmup_task  = asyncio.create_task(warmup_models())
-    cleanup_task = asyncio.create_task(rate_limiter.periodic_cleanup())
+    health_task = asyncio.create_task(periodic_health_check())
+    warmup_task = asyncio.create_task(warmup_models())
 
     log("=" * 70)
-    log("GATEWAY READY [OK] (Listening on http://0.0.0.0:8000)")
+    log("GATEWAY READY [OK]")
     log("=" * 70)
     yield
     health_task.cancel()
     warmup_task.cancel()
-    cleanup_task.cancel()
     await http_client.aclose()
-    await rate_limiter.close_pool()
 
-app = FastAPI(title="AI Gateway v3.0", version="3.0.0", lifespan=lifespan)
 
-# Security Middleware: Request-ID, Body Size Limits, Security Headers, CORS, Chrome PNA
-@app.middleware("http")
-async def security_middleware(request: Request, call_next):
-    # 1. Request ID Generation / Validation
-    req_id_hdr = request.headers.get("X-Request-ID", "").strip()
-    if req_id_hdr and len(req_id_hdr) <= 64 and req_id_hdr.replace("-", "").replace("_", "").isalnum():
-        request_id = req_id_hdr
-    else:
-        request_id = f"req_{secrets.token_hex(12)}"
-    request.state.request_id = request_id
+app = FastAPI(title="AI Gateway", version="3.0.0", lifespan=lifespan)
 
-    # 2. Body Size Limit Enforcement (10 MB default)
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > security.MAX_REQUEST_BODY_BYTES:
-                return JSONResponse(
-                    {"error": "Payload Too Large — request body exceeds 10MB limit", "request_id": request_id},
-                    status_code=413,
-                    headers={"X-Request-ID": request_id}
-                )
-        except ValueError:
-            pass
-
-    # 3. OPTIONS Preflight / Handle
-    if request.method == "OPTIONS":
-        response = JSONResponse(content={})
-    else:
-        response = await call_next(request)
-
-    # 4. Security Headers (Defense-in-depth)
-    response.headers["X-Request-ID"] = request_id
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; "
-        "connect-src 'self'; "
-        "frame-ancestors 'none';"
-    )
-
-    # 5. Configurable CORS & PNA Headers
-    origin = request.headers.get("Origin")
-    if origin and (origin in security.CORS_ALLOWED_ORIGINS or "*" in security.CORS_ALLOWED_ORIGINS or origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
-    else:
-        response.headers["Access-Control-Allow-Origin"] = "*"
-
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Expose-Headers"] = "X-Server, X-Model, X-Request-ID, X-Conversation-ID, Content-Disposition"
-
-    if request.headers.get("Access-Control-Request-Private-Network") == "true":
-        response.headers["Access-Control-Allow-Private-Network"] = "true"
-
-    return response
+# Standard CORS Middleware (allows all origins, headers, methods)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Server", "X-Model", "X-Request-ID", "X-Conversation-ID", "Content-Disposition"],
+)
 
 ###############################################################################
 # MOUNT FRONTEND
 ###############################################################################
 
-frontend_dir = Path("Frontend")
+frontend_dir = ROOT_DIR / "Frontend"
+if not frontend_dir.exists():
+    frontend_dir = BASE_DIR / "Frontend"
+
 if frontend_dir.exists():
     if (frontend_dir / "css").exists():
         app.mount("/css", StaticFiles(directory=str(frontend_dir / "css")), name="css")
@@ -518,11 +523,16 @@ if frontend_dir.exists():
     app.mount("/chat", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
     log("Mounted static Frontend at / and /chat")
 
+generated_images_dir = BASE_DIR / "generated_images" if (BASE_DIR / "generated_images").exists() else ROOT_DIR / "generated_images"
+generated_images_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/generated_images", StaticFiles(directory=str(generated_images_dir)), name="generated_images")
+log("Mounted /generated_images static directory [OK]")
+
 @app.get("/")
 async def root():
     if (frontend_dir / "index.html").exists():
         return FileResponse(str(frontend_dir / "index.html"))
-    return RedirectResponse("/docs")
+    return HTMLResponse("<h1>AI Gateway Ready</h1><p><a href='/chat'>Open Chat Interface</a></p>")
 
 ###############################################################################
 # CLIENT IP HELPER
@@ -558,6 +568,8 @@ def update_stats(intent: str):
         STATS["vision_requests"] += 1
     elif intent == REASONING:
         STATS["reasoning_requests"] += 1
+    elif intent == IMAGE_GEN:
+        STATS["image_gen_requests"] = STATS.get("image_gen_requests", 0) + 1
 
 def select_model(intent: str) -> str:
     if intent == VISION:
@@ -575,7 +587,7 @@ async def generate(request: Request):
     auth_header  = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         potential_key = auth_header.replace("Bearer ", "").strip()
-        info = API_KEYS.get(potential_key)
+        info = find_api_key(potential_key)
         if info and info.get("active", True):
             expires = info.get("expires_at")
             if not expires or datetime.fromisoformat(expires) > datetime.now():
@@ -584,36 +596,6 @@ async def generate(request: Request):
                 info["usage_count"] = info.get("usage_count", 0) + 1
                 info["last_used"] = datetime.now().isoformat()
                 asyncio.create_task(save_api_keys_async(API_KEYS))
-
-    # ── Phase 1: Rate limiting ──────────────────────────────────────────────
-    client_ip = get_client_ip(request)
-    identity  = rate_limiter.make_identity(api_key_name, client_ip)
-
-    rl = await rate_limiter.check_rate_limit(identity)
-    if not rl["allowed"]:
-        limit_type = rl["limit_type"]
-        # Record the rejected attempt with specific limit_type in intent (does NOT count against quota)
-        asyncio.create_task(rate_limiter.record_request(
-            identity, model=None, status="rate_limited", intent=limit_type
-        ))
-        if limit_type == "burst":
-            msg      = "Too many requests. Slow down and try again shortly."
-            err_code = "rate_limit_exceeded"
-        else:
-            msg      = "Hourly request quota exceeded. Please try again later."
-            err_code = "quota_exceeded"
-        log(f"[RATE LIMIT] {identity} blocked ({limit_type}), retry_after={rl['retry_after']}s")
-        STATS["failed_requests"] += 1
-        return JSONResponse(
-            {
-                "error": err_code,
-                "message": msg,
-                "retry_after": rl["retry_after"],
-            },
-            status_code=429,
-            headers={"Retry-After": str(rl["retry_after"])},
-        )
-    # ── End rate limit check ─────────────────────────────────────────────────
 
     try:
         body = await request.json()
@@ -661,11 +643,83 @@ async def generate(request: Request):
 
         # Respect explicit model if provided and valid, otherwise auto-select
         requested_model = body.get("model")
-        if requested_model and requested_model in ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b"]:
+        if requested_model and requested_model in ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "stable-diffusion", "sd15", "diffusion", "image-gen"]:
             model = requested_model
         else:
             model = select_model(intent)
         body["model"] = model
+
+        # ── Fast-path for Image Generation Intent ────────────────────────────
+        if intent == IMAGE_GEN or requested_model in ["stable-diffusion", "sd15", "diffusion", "image-gen"]:
+            clean_prompt = prompt
+            for prefix in FastIntentDetector.IMAGE_PREFIXES:
+                if clean_prompt.lower().startswith(prefix):
+                    clean_prompt = clean_prompt[len(prefix):].strip()
+                    break
+            for phrase in FastIntentDetector.IMAGE_PHRASES:
+                if phrase in clean_prompt.lower():
+                    idx = clean_prompt.lower().find(phrase)
+                    after = clean_prompt[idx + len(phrase):].strip()
+                    if after.lower().startswith("of "):
+                        after = after[3:].strip()
+                    if after:
+                        clean_prompt = after
+                    break
+
+            try:
+                gen_result = await image_generator.generate_image_async(
+                    prompt=clean_prompt or prompt,
+                    num_inference_steps=25,
+                    guidance_scale=7.5,
+                )
+                elapsed = gen_result["latency_ms"]
+                img_url = gen_result["image_url"]
+                formatted_md = (
+                    f"![Generated Image]({img_url})\n\n"
+                    f"**Prompt:** *{gen_result['prompt']}*\n"
+                    f"**Seed:** `{gen_result['seed']}` | **Steps:** `{gen_result['steps']}` | **Latency:** `{elapsed}ms`"
+                )
+
+                conversation_memory.set_last_response(conversation_id, f"[GENERATED IMAGE]: {gen_result['prompt']}", prompt)
+                log(f"[IMAGE_GEN] Generated '{gen_result['prompt'][:35]}...' in {elapsed}ms (seed={gen_result['seed']})")
+
+                if stream:
+                    async def img_stream():
+                        chunk_dict = {
+                            "model": "stable-diffusion-v1.5",
+                            "response": formatted_md,
+                            "done": True,
+                            "eval_count": 50,
+                            "image_url": img_url,
+                            "seed": gen_result["seed"],
+                            "latency_ms": elapsed,
+                            "conversation_id": conversation_id,
+                        }
+                        yield (json.dumps(chunk_dict) + "\n").encode("utf-8")
+
+                    return StreamingResponse(
+                        img_stream(),
+                        media_type="application/x-ndjson",
+                        headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
+                    )
+                else:
+                    return JSONResponse(
+                        content={
+                            "model": "stable-diffusion-v1.5",
+                            "response": formatted_md,
+                            "image_url": img_url,
+                            "seed": gen_result["seed"],
+                            "latency_ms": elapsed,
+                            "_intent": IMAGE_GEN,
+                            "_server": "local-diffusion",
+                            "conversation_id": conversation_id,
+                        },
+                        headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
+                    )
+            except Exception as e:
+                log(f"[IMAGE_GEN ERROR] {e}")
+                STATS["failed_requests"] += 1
+                return JSONResponse({"error": f"Image generation failed: {str(e)}", "conversation_id": conversation_id}, status_code=500)
 
         # ── Conversation History & Context Linking ──────────────────────────
         prev_response = conversation_memory.get_last_response(conversation_id)
@@ -678,6 +732,7 @@ async def generate(request: Request):
 
         # CRITICAL FIX: Pass inference parameters inside Ollama's "options" object
         max_tokens = MAX_TOKENS_BY_TYPE.get(intent, 200)
+        body["keep_alive"] = "24h"
         if "options" not in body or not isinstance(body["options"], dict):
             body["options"] = {}
         body["options"]["num_predict"] = max_tokens
@@ -750,17 +805,11 @@ async def generate(request: Request):
                     STATS["failed_requests"] += 1
                     elapsed = round((time.perf_counter() - req_start) * 1000, 1)
                     log(f"Stream error on {role}: {e}")
-                    asyncio.create_task(rate_limiter.record_request(
-                        identity, model=model, status="error", latency_ms=elapsed, intent=intent
-                    ))
                 else:
                     elapsed = round((time.perf_counter() - req_start) * 1000, 1)
                     full_resp = "".join(accumulated_text)
                     if full_resp:
                         conversation_memory.set_last_response(conversation_id, full_resp, prompt)
-                    asyncio.create_task(rate_limiter.record_request(
-                        identity, model=model, status="ok", tokens=final_tokens, latency_ms=elapsed, intent=intent
-                    ))
                 finally:
                     elapsed = round((time.perf_counter() - req_start) * 1000, 1)
                     SmartScheduler.finish_request(role, elapsed)
@@ -782,12 +831,6 @@ async def generate(request: Request):
             if resp_text:
                 conversation_memory.set_last_response(conversation_id, resp_text, prompt)
 
-            tokens = data.get("eval_count") or None
-            asyncio.create_task(rate_limiter.record_request(
-                identity, model=model, status="ok",
-                tokens=tokens, latency_ms=elapsed, intent=intent
-            ))
-
             data.update({
                 "_intent": intent,
                 "_model": model,
@@ -807,9 +850,6 @@ async def generate(request: Request):
             SERVER_STATE[role]["errors"] += 1
             STATS["failed_requests"] += 1
             SmartScheduler.finish_request(role)
-            asyncio.create_task(rate_limiter.record_request(
-                identity, model=model, status="error", latency_ms=None, intent=intent
-            ))
             log(f"Error on {role}: {e}")
             return JSONResponse(
                 {"error": str(e), "server": role, "conversation_id": conversation_id},
@@ -823,283 +863,477 @@ async def generate(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 ###############################################################################
-# PHASE 1 & 2: USAGE & ANALYTICS ENDPOINTS
+# SPEECH-TO-TEXT (STT) TRANSCRIPTION ENGINE & ENDPOINTS
 ###############################################################################
 
-def resolve_caller(request: Request) -> Tuple[str, bool]:
+ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac", ".aac", ".wma"}
+
+def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> Dict[str, Any]:
     """
-    Identifies the caller and determines admin status.
-    Returns (identity, is_admin).
+    Synchronous audio transcription worker function executed in background threadpool.
+    Supports MP3, WAV, M4A, OGG, WEBM, FLAC, AAC formats.
     """
-    api_key_name = None
-    is_admin = False
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        potential_key = auth_header.replace("Bearer ", "").strip()
-        info = find_api_key(potential_key)
-        if info and info.get("active", True):
-            expires = info.get("expires_at")
-            if not expires or datetime.fromisoformat(expires) > datetime.now():
-                api_key_name = info.get("name", potential_key[:8])
-                if info.get("name") == ADMIN_KEY_NAME or info.get("role") == "admin":
-                    is_admin = True
+    if whisper_model is None:
+        raise RuntimeError("Faster-Whisper model is not initialized or failed to load on startup.")
 
-    client_ip = get_client_ip(request)
-    identity  = rate_limiter.make_identity(api_key_name, client_ip)
-    return identity, is_admin
-
-
-async def authenticate_admin_request(
-    request: Request, action: str, resource_type: str = "admin", resource_id: Optional[str] = None
-) -> Tuple[Optional[str], Optional[JSONResponse]]:
-    """
-    Strictly authenticates an administrator request.
-    Enforces 401 Unauthorized if token missing/invalid, 403 Forbidden if not admin.
-    Logs security audit events automatically.
-    """
-    request_id = getattr(request.state, "request_id", f"req_{secrets.token_hex(8)}")
-    client_ip = get_client_ip(request)
-    user_agent = request.headers.get("User-Agent", "")
-
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        await security.log_audit_event(
-            actor_type="anonymous",
-            actor_id=f"ip:{client_ip}",
-            action=f"{action}_DENIED",
-            resource_type=resource_type,
-            resource_id=resource_id,
-            result="denied",
-            ip_address=client_ip,
-            request_id=request_id,
-            user_agent=user_agent,
-            metadata={"reason": "Missing Bearer token"}
-        )
-        return None, JSONResponse({"error": "Unauthorized — Bearer token required"}, status_code=401)
-
-    potential_key = auth_header.replace("Bearer ", "").strip()
-    info = find_api_key(potential_key)
-
-    if not info or not info.get("active", True):
-        await security.log_audit_event(
-            actor_type="anonymous",
-            actor_id=f"ip:{client_ip}",
-            action="AUTH_FAILURE",
-            resource_type=resource_type,
-            resource_id=resource_id,
-            result="failed",
-            ip_address=client_ip,
-            request_id=request_id,
-            user_agent=user_agent,
-            metadata={"reason": "Invalid or inactive API key"}
-        )
-        return None, JSONResponse({"error": "Unauthorized — invalid or inactive API key"}, status_code=401)
-
-    expires = info.get("expires_at")
-    if expires and datetime.fromisoformat(expires) <= datetime.now():
-        await security.log_audit_event(
-            actor_type="user",
-            actor_id=f"key:{info.get('name', 'unknown')}",
-            action="AUTH_FAILURE",
-            resource_type=resource_type,
-            resource_id=resource_id,
-            result="failed",
-            ip_address=client_ip,
-            request_id=request_id,
-            user_agent=user_agent,
-            metadata={"reason": "API key expired"}
-        )
-        return None, JSONResponse({"error": "Forbidden — API key expired"}, status_code=403)
-
-    is_admin = (info.get("role") == "admin" or info.get("name") == ADMIN_KEY_NAME)
-    key_name = info.get("name", "admin")
-
-    if not is_admin:
-        await security.log_audit_event(
-            actor_type="user",
-            actor_id=f"key:{key_name}",
-            action="ADMIN_ACCESS_DENIED",
-            resource_type=resource_type,
-            resource_id=resource_id,
-            result="denied",
-            ip_address=client_ip,
-            request_id=request_id,
-            user_agent=user_agent,
-            metadata={"reason": "Non-admin key attempted privileged operation"}
-        )
-        return None, JSONResponse({"error": "Forbidden — admin key required"}, status_code=403)
-
-    # Authorized admin
-    await security.log_audit_event(
-        actor_type="admin",
-        actor_id=f"key:{key_name}",
-        action=action,
-        resource_type=resource_type,
-        resource_id=resource_id,
-        result="success",
-        ip_address=client_ip,
-        request_id=request_id,
-        user_agent=user_agent,
+    # beam_size=5 provides high accuracy; vad_filter trims leading/trailing silent segments
+    segments, info = whisper_model.transcribe(
+        file_path,
+        language=language if (language and language.strip().lower() != "auto") else None,
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500),
     )
-    return key_name, None
 
+    segment_list = list(segments)
+    transcribed_text = " ".join(seg.text.strip() for seg in segment_list).strip()
 
-@app.get("/api/usage")
-async def api_usage(request: Request):
+    return {
+        "text": transcribed_text,
+        "language": getattr(info, "language", "en"),
+        "language_probability": round(getattr(info, "language_probability", 1.0), 4),
+        "duration": round(getattr(info, "duration", 0.0), 2),
+        "segments_count": len(segment_list),
+    }
+
+async def _handle_transcription_request(
+    request: Request,
+    file: UploadFile,
+    language: Optional[str],
+    conversation_id: Optional[str],
+    test_type: str,
+) -> JSONResponse:
     """
-    Returns usage stats for the calling identity (API key or IP).
-    No authentication required — returns stats for whoever is calling.
+    Shared handler for /api/tests/listening/transcribe and /api/tests/speaking/transcribe.
+    Performs file validation, asynchronous thread-pool offloading, and deterministic cleanup.
     """
-    identity, _ = resolve_caller(request)
-    stats = await rate_limiter.get_usage_stats(identity)
-    return JSONResponse(stats)
+    if not file or not file.filename:
+        return JSONResponse(
+            {"error": "No audio file uploaded", "message": "Please provide an audio file in form-data ('file')."},
+            status_code=400
+        )
+
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in ALLOWED_AUDIO_EXTENSIONS:
+        return JSONResponse(
+            {
+                "error": "Unsupported audio format",
+                "message": f"File extension '{file_ext}' is not supported. Supported: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}",
+                "supported_formats": sorted(list(ALLOWED_AUDIO_EXTENSIONS)),
+            },
+            status_code=400
+        )
+
+    if not FASTER_WHISPER_AVAILABLE or whisper_model is None:
+        return JSONResponse(
+            {
+                "error": "Faster-Whisper engine unavailable",
+                "message": "Faster-Whisper is not installed or model failed to initialize on startup."
+            },
+            status_code=503
+        )
+
+    # Conversation ID resolution
+    conv_id = conversation_id or request.headers.get("X-Conversation-ID")
+    if not conv_id or not str(conv_id).strip():
+        conv_id = f"conv_{secrets.token_hex(12)}"
+    else:
+        conv_id = str(conv_id).strip()
+
+    req_start = time.perf_counter()
+    temp_file_path = None
+
+    try:
+        # Create a secure temporary file with the matching audio extension
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
+            temp_file_path = tmp.name
+            shutil.copyfileobj(file.file, tmp)
+
+        # Offload synchronous CTranslate2 inference to worker thread pool
+        result = await asyncio.to_thread(_transcribe_audio_file, temp_file_path, language)
+        elapsed_ms = round((time.perf_counter() - req_start) * 1000, 1)
+
+        # Link transcript into conversation memory if text exists
+        if result["text"]:
+            conversation_memory.set_last_response(
+                conv_id,
+                f"[{test_type.upper()} TEST AUDIO TRANSCRIPT]: {result['text']}",
+                prompt=f"Uploaded audio {file.filename}"
+            )
+
+        log(f"[{test_type.upper()}_STT] Transcribed '{file.filename}' ({result.get('duration', 0)}s audio) in {elapsed_ms}ms: \"{result['text'][:60]}...\"")
+
+        response_payload = {
+            "text": result["text"],
+            "language": result["language"],
+            "language_probability": result["language_probability"],
+            "duration_seconds": result["duration"],
+            "latency_ms": elapsed_ms,
+            "test_type": test_type,
+            "conversation_id": conv_id,
+        }
+
+        return JSONResponse(
+            content=response_payload,
+            headers={"X-Conversation-ID": conv_id, "X-STT-Model": WHISPER_MODEL_SIZE}
+        )
+
+    except Exception as e:
+        log(f"[{test_type.upper()}_STT ERROR] Transcription failed for '{file.filename}': {e}")
+        return JSONResponse(
+            {
+                "error": "Transcription failed",
+                "message": str(e),
+                "conversation_id": conv_id,
+            },
+            status_code=500,
+            headers={"X-Conversation-ID": conv_id}
+        )
+
+    finally:
+        # Guarantee deletion of temporary audio file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception as e:
+                log(f"[CLEANUP WARNING] Could not remove temp file {temp_file_path}: {e}")
+        await file.close()
 
 
-@app.get("/api/analytics/summary")
-async def analytics_summary(request: Request, range: str = "24h"):
+@app.post("/api/tests/listening/transcribe")
+async def transcribe_listening_test(
+    request: Request,
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(None),
+    conversation_id: Optional[str] = Form(None),
+):
     """
-    Aggregated usage summary. Admin gets global data (or filtered);
-    standard caller gets scoped data for their identity.
+    Transcribes audio for Listening tests.
+    Accepts: MP3, WAV, M4A, OGG, WEBM, FLAC, AAC.
+    Returns: JSON with transcribed text, detected/specified language, and audio metadata.
     """
-    identity, is_admin = resolve_caller(request)
-    scope_identity = None if is_admin else identity
-    try:
-        data = await analytics.get_summary(identity=scope_identity, time_range=range)
-        return JSONResponse(data)
-    except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=400)
-    except Exception as e:
-        log(f"[ANALYTICS ERROR] Summary: {e}")
-        return JSONResponse({"error": "Failed to fetch analytics summary"}, status_code=500)
+    return await _handle_transcription_request(
+        request=request,
+        file=file,
+        language=language,
+        conversation_id=conversation_id,
+        test_type="listening",
+    )
 
 
-@app.get("/api/analytics/requests")
-async def analytics_requests(request: Request, range: str = "24h"):
-    """Time-series request trend buckets for charts."""
-    identity, is_admin = resolve_caller(request)
-    scope_identity = None if is_admin else identity
-    try:
-        data = await analytics.get_request_timeseries(identity=scope_identity, time_range=range)
-        return JSONResponse(data)
-    except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=400)
-    except Exception as e:
-        log(f"[ANALYTICS ERROR] Requests: {e}")
-        return JSONResponse({"error": "Failed to fetch request time-series"}, status_code=500)
-
-
-@app.get("/api/analytics/models")
-async def analytics_models(request: Request, range: str = "24h"):
-    """Model-level usage, tokens, latency, and error breakdown."""
-    identity, is_admin = resolve_caller(request)
-    scope_identity = None if is_admin else identity
-    try:
-        data = await analytics.get_model_stats(identity=scope_identity, time_range=range)
-        return JSONResponse(data)
-    except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=400)
-    except Exception as e:
-        log(f"[ANALYTICS ERROR] Models: {e}")
-        return JSONResponse({"error": "Failed to fetch model analytics"}, status_code=500)
-
-
-@app.get("/api/analytics/latency")
-async def analytics_latency(request: Request, range: str = "24h"):
-    """Latency distribution and stats."""
-    identity, is_admin = resolve_caller(request)
-    scope_identity = None if is_admin else identity
-    try:
-        data = await analytics.get_latency_stats(identity=scope_identity, time_range=range)
-        return JSONResponse(data)
-    except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=400)
-    except Exception as e:
-        log(f"[ANALYTICS ERROR] Latency: {e}")
-        return JSONResponse({"error": "Failed to fetch latency analytics"}, status_code=500)
-
-
-@app.get("/api/analytics/errors")
-async def analytics_errors(request: Request, range: str = "24h"):
-    """Error categories and rate limit event breakdown."""
-    identity, is_admin = resolve_caller(request)
-    scope_identity = None if is_admin else identity
-    try:
-        data = await analytics.get_error_stats(identity=scope_identity, time_range=range)
-        return JSONResponse(data)
-    except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=400)
-    except Exception as e:
-        log(f"[ANALYTICS ERROR] Errors: {e}")
-        return JSONResponse({"error": "Failed to fetch error analytics"}, status_code=500)
-
-
-@app.get("/api/analytics/recent")
-async def analytics_recent(request: Request, limit: int = 20):
-    """Recent activity log (bounded and masked)."""
-    identity, is_admin = resolve_caller(request)
-    scope_identity = None if is_admin else identity
-    try:
-        data = await analytics.get_recent_activity(identity=scope_identity, limit=limit)
-        return JSONResponse(data)
-    except Exception as e:
-        log(f"[ANALYTICS ERROR] Recent: {e}")
-        return JSONResponse({"error": "Failed to fetch recent activity"}, status_code=500)
-
-
-@app.get("/api/analytics/keys")
-async def analytics_keys(request: Request, range: str = "24h"):
-    """Aggregated usage per API key (Admin only)."""
-    _, err_resp = await authenticate_admin_request(request, action="ADMIN_ACCESS", resource_type="analytics")
-    if err_resp:
-        return err_resp
-    try:
-        data = await analytics.get_key_usage(time_range=range)
-        return JSONResponse(data)
-    except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=400)
-    except Exception as e:
-        log(f"[ANALYTICS ERROR] Key usage: {e}")
-        return JSONResponse({"error": "Failed to fetch key usage"}, status_code=500)
-
-
-@app.post("/api/admin/set-quota")
-async def admin_set_quota(request: Request):
+@app.post("/api/tests/speaking/transcribe")
+async def transcribe_speaking_test(
+    request: Request,
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(None),
+    conversation_id: Optional[str] = Form(None),
+):
     """
-    Allows an administrator to override quota limits for a specific identity.
-    SECURITY: Enforces valid administrator authentication and logs audit events.
+    Transcribes candidate audio recordings for Speaking tests.
+    Accepts: MP3, WAV, M4A, OGG, WEBM, FLAC, AAC.
+    Returns: JSON with candidate speech text, detected/specified language, and audio metadata.
     """
-    admin_user, err_resp = await authenticate_admin_request(request, action="QUOTA_CHANGED", resource_type="quota")
-    if err_resp:
-        return err_resp
+    return await _handle_transcription_request(
+        request=request,
+        file=file,
+        language=language,
+        conversation_id=conversation_id,
+        test_type="speaking",
+    )
 
+###############################################################################
+# TEST EVALUATION MODULES (READING, WRITING, LISTENING, SPEAKING)
+###############################################################################
+
+async def _evaluate_test_submission(
+    test_type: str,
+    prompt: str,
+    conversation_id: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+) -> JSONResponse:
+    """Helper that routes test evaluation to the LLM cluster (Mistral:7b)."""
+    conv_id = conversation_id or f"conv_{secrets.token_hex(12)}"
+    
+    # Check conversation memory if prior transcript/context exists
+    prev_context = conversation_memory.get_last_response(conv_id)
+    combined_prompt = prompt
+    if prev_context:
+        combined_prompt = f"{prev_context}\n\nCandidate Submission & Evaluation Request:\n{prompt}"
+    
+    body = {
+        "model": "mistral:7b",
+        "prompt": combined_prompt,
+        "stream": False,
+        "keep_alive": "24h",
+        "options": {
+            "num_predict": 400,
+            "temperature": 0.2,
+            "top_p": 0.85
+        }
+    }
+    if system_prompt:
+        body["system"] = system_prompt
+
+    worker = SmartScheduler.select_worker("mistral:7b")
+    if not worker:
+        return JSONResponse(
+            {"error": "No LLM worker server available for evaluation", "test_type": test_type, "conversation_id": conv_id},
+            status_code=503,
+            headers={"X-Conversation-ID": conv_id}
+        )
+
+    role = worker["role"]
+    url = worker["url"]
+    SmartScheduler.start_request(role)
+    t0 = time.perf_counter()
+
+    try:
+        resp = await http_client.post(f"{url}/api/generate", json=body, timeout=120.0)
+        data = resp.json()
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        SmartScheduler.finish_request(role, elapsed_ms)
+
+        eval_text = data.get("response", "")
+        if eval_text:
+            conversation_memory.set_last_response(conv_id, eval_text, prompt)
+
+        return JSONResponse(
+            content={
+                "test_type": test_type,
+                "evaluation": eval_text,
+                "model": "mistral:7b",
+                "server": role,
+                "latency_ms": elapsed_ms,
+                "conversation_id": conv_id,
+            },
+            headers={"X-Server": role, "X-Conversation-ID": conv_id, "X-Test-Type": test_type}
+        )
+    except Exception as e:
+        SmartScheduler.finish_request(role)
+        return JSONResponse(
+            {"error": f"Evaluation failed on worker {role}: {str(e)}", "test_type": test_type, "conversation_id": conv_id},
+            status_code=500,
+            headers={"X-Conversation-ID": conv_id}
+        )
+
+
+@app.post("/api/tests/reading")
+async def evaluate_reading_test(request: Request):
+    """
+    Evaluates Reading test answers (passage comprehension, questions, vocabulary).
+    Accepts JSON: { "prompt": "...", "passage": "...", "answers": "...", "conversation_id": "..." }
+    """
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    identity      = body.get("identity", "").strip()
-    hourly_quota  = body.get("hourly_quota")
-    burst_limit   = body.get("burst_limit")
-    burst_window  = body.get("burst_window", 60)
+    conv_id = body.get("conversation_id")
+    passage = body.get("passage", "")
+    answers = body.get("answers", "")
+    prompt = body.get("prompt", "")
 
-    if not identity:
-        return JSONResponse({"error": "'identity' is required"}, status_code=422)
-    if not isinstance(hourly_quota, int) or hourly_quota < 1 or hourly_quota > 100_000:
-        return JSONResponse({"error": "'hourly_quota' must be an integer between 1 and 100000"}, status_code=422)
-    if not isinstance(burst_limit, int) or burst_limit < 1 or burst_limit > 1000:
-        return JSONResponse({"error": "'burst_limit' must be an integer between 1 and 1000"}, status_code=422)
-    if not isinstance(burst_window, int) or burst_window < 10 or burst_window > 3600:
-        return JSONResponse({"error": "'burst_window' must be an integer between 10 and 3600"}, status_code=422)
+    eval_prompt = prompt
+    if passage or answers:
+        eval_prompt = f"READING PASSAGE:\n{passage}\n\nCANDIDATE ANSWERS / QUESTIONS:\n{answers}\n\nTASK: {prompt or 'Evaluate candidate answers for correctness, reading comprehension, and precision. Provide scores and corrective feedback.'}"
 
-    await rate_limiter.set_quota(identity, hourly_quota, burst_limit, burst_window)
-    log(f"[ADMIN] Quota updated: identity={identity}, hourly={hourly_quota}, burst={burst_limit}/{burst_window}s")
-    return JSONResponse({
-        "ok": True,
-        "identity": identity,
-        "hourly_quota": hourly_quota,
-        "burst_limit": burst_limit,
-        "burst_window": burst_window,
-    })
+    if not eval_prompt.strip():
+        return JSONResponse({"error": "Missing reading test prompt, passage, or answers."}, status_code=400)
+
+    sys_prompt = "You are an expert English Reading Examiner. Grade the candidate reading comprehension answers accurately, provide concise explanations, score the answers, and highlight mistakes."
+    return await _evaluate_test_submission("reading", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
+
+
+@app.post("/api/tests/writing")
+async def evaluate_writing_test(request: Request):
+    """
+    Evaluates Writing test submissions (essays, reports, emails).
+    Accepts JSON: { "prompt": "...", "essay": "...", "task_prompt": "...", "conversation_id": "..." }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    conv_id = body.get("conversation_id")
+    essay = body.get("essay", "") or body.get("submission", "")
+    task_prompt = body.get("task_prompt", "")
+    prompt = body.get("prompt", "")
+
+    eval_prompt = prompt
+    if essay or task_prompt:
+        eval_prompt = f"WRITING PROMPT / TOPIC:\n{task_prompt}\n\nCANDIDATE ESSAY:\n{essay}\n\nTASK: {prompt or 'Evaluate the essay based on Task Achievement, Coherence and Cohesion, Lexical Resource, and Grammatical Range and Accuracy. Provide band score and actionable feedback.'}"
+
+    if not eval_prompt.strip():
+        return JSONResponse({"error": "Missing writing essay or prompt."}, status_code=400)
+
+    sys_prompt = "You are an official IELTS/CEFR English Writing Examiner. Assess essays across Task Achievement, Coherence & Cohesion, Lexical Resource, and Grammar. Provide an overall band score and constructive feedback."
+    return await _evaluate_test_submission("writing", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
+
+
+@app.post("/api/tests/listening")
+async def evaluate_listening_test(request: Request):
+    """
+    Evaluates Listening test answers against transcript/audio questions.
+    Accepts JSON: { "prompt": "...", "transcript": "...", "answers": "...", "conversation_id": "..." }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    conv_id = body.get("conversation_id")
+    transcript = body.get("transcript", "")
+    answers = body.get("answers", "")
+    prompt = body.get("prompt", "")
+
+    eval_prompt = prompt
+    if transcript or answers:
+        eval_prompt = f"AUDIO TRANSCRIPT:\n{transcript}\n\nCANDIDATE ANSWERS:\n{answers}\n\nTASK: {prompt or 'Evaluate the candidate listening answers against the audio transcript for factual accuracy, spelling, and completeness. Provide scores and correction notes.'}"
+
+    if not eval_prompt.strip():
+        return JSONResponse({"error": "Missing listening test prompt, transcript, or candidate answers."}, status_code=400)
+
+    sys_prompt = "You are an expert English Listening Examiner. Compare the candidate's answers against the audio transcript, determine correctness, and provide exact score and feedback."
+    return await _evaluate_test_submission("listening", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
+
+
+@app.post("/api/tests/speaking")
+async def evaluate_speaking_test(request: Request):
+    """
+    Evaluates candidate Speaking responses (transcribed speech).
+    Accepts JSON: { "prompt": "...", "transcript": "...", "topic": "...", "conversation_id": "..." }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    conv_id = body.get("conversation_id")
+    transcript = body.get("transcript", "")
+    topic = body.get("topic", "")
+    prompt = body.get("prompt", "")
+
+    eval_prompt = prompt
+    if transcript or topic:
+        eval_prompt = f"SPEAKING TOPIC / QUESTION:\n{topic}\n\nCANDIDATE SPOKEN TRANSCRIPT:\n{transcript}\n\nTASK: {prompt or 'Evaluate candidate spoken response for Fluency, Lexical Resource, Grammatical Accuracy, Relevance, and Structure. Provide an estimated speaking band score and detailed constructive feedback.'}"
+
+    if not eval_prompt.strip():
+        return JSONResponse({"error": "Missing speaking transcript or prompt."}, status_code=400)
+
+    sys_prompt = "You are an official IELTS/CEFR English Speaking Examiner. Evaluate transcribed candidate speech for fluency, coherence, vocabulary breadth, grammar correctness, and topical relevance."
+    return await _evaluate_test_submission("speaking", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
+
+
+###############################################################################
+# IMAGE GENERATION (STABLE DIFFUSION v1.5) ENDPOINTS
+###############################################################################
+
+@app.post("/api/image/generate")
+async def api_generate_image(request: Request):
+    """
+    Dedicated endpoint for generating images via Stable Diffusion v1.5.
+    Accepts JSON:
+    {
+        "prompt": "...",
+        "negative_prompt": "...",
+        "width": 512,
+        "height": 512,
+        "steps": 25,
+        "guidance_scale": 7.5,
+        "seed": null,
+        "conversation_id": "..."
+    }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        return JSONResponse({"error": "Prompt is required"}, status_code=400)
+
+    conv_id = body.get("conversation_id") or f"conv_{secrets.token_hex(12)}"
+    neg_prompt = body.get("negative_prompt", "")
+    width = int(body.get("width", 512))
+    height = int(body.get("height", 512))
+    steps = int(body.get("steps", 25))
+    guidance = float(body.get("guidance_scale", 7.5))
+    seed = body.get("seed")
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except Exception:
+            seed = None
+
+    try:
+        result = await image_generator.generate_image_async(
+            prompt=prompt,
+            negative_prompt=neg_prompt,
+            width=width,
+            height=height,
+            num_inference_steps=steps,
+            guidance_scale=guidance,
+            seed=seed,
+        )
+        elapsed = result["latency_ms"]
+        log(f"[IMAGE_GEN] Generated image for '{prompt[:40]}...' in {elapsed}ms (seed={result['seed']})")
+
+        return JSONResponse({
+            "success": True,
+            "image_url": result["image_url"],
+            "image_base64": result["image_base64"],
+            "prompt": result["prompt"],
+            "negative_prompt": result["negative_prompt"],
+            "seed": result["seed"],
+            "width": result["width"],
+            "height": result["height"],
+            "steps": result["steps"],
+            "guidance_scale": result["guidance_scale"],
+            "latency_ms": elapsed,
+            "conversation_id": conv_id,
+        })
+    except Exception as e:
+        log(f"[IMAGE_GEN ERROR] {e}")
+        return JSONResponse({"error": f"Image generation failed: {str(e)}"}, status_code=500)
+
+
+@app.post("/v1/images/generations")
+async def openai_images_generations(request: Request):
+    """OpenAI-compatible image generation endpoint."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        return JSONResponse({"error": "Prompt is required"}, status_code=400)
+
+    size = body.get("size", "512x512")
+    try:
+        w_str, h_str = size.split("x")
+        w, h = int(w_str), int(h_str)
+    except Exception:
+        w, h = 512, 512
+
+    try:
+        base_url = str(request.base_url).rstrip("/")
+        result = await image_generator.generate_image_async(prompt=prompt, width=w, height=h)
+        full_url = f"{base_url}{result['image_url']}"
+        return JSONResponse({
+            "created": int(time.time()),
+            "data": [
+                {
+                    "url": full_url,
+                    "b64_json": result["image_base64"],
+                    "revised_prompt": prompt,
+                }
+            ]
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 ###############################################################################
@@ -1137,104 +1371,6 @@ async def status():
         "token_limits": MAX_TOKENS_BY_TYPE,
     }
 
-
-###############################################################################
-# PHASE 2: USAGE ANALYTICS DASHBOARD UI
-###############################################################################
-
-@app.get("/dashboard")
-async def dashboard():
-    """Serves the Production AI Gateway Control Plane Dashboard."""
-    dashboard_file = Path("Frontend/dashboard.html")
-    if dashboard_file.exists():
-        return FileResponse(str(dashboard_file))
-    return HTMLResponse("<h1>AI Gateway Dashboard</h1><p>Dashboard file not found.</p>", status_code=404)
-
-###############################################################################
-# ADMIN KEY MANAGEMENT & AUDIT LOGS
-###############################################################################
-
-@app.post("/api/admin/generate-key")
-async def generate_api_key(request: Request):
-    """Generates a new API key. SECURITY: Admin authentication required."""
-    admin_user, err_resp = await authenticate_admin_request(request, action="API_KEY_CREATED", resource_type="api_key")
-    if err_resp:
-        return err_resp
-
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-
-    name = str(body.get("name", "Unnamed Key")).strip()
-    expires_in_days = body.get("expires_in_days", 365)
-    role = str(body.get("role", "user")).strip()
-
-    if not isinstance(expires_in_days, int) or expires_in_days < 1 or expires_in_days > 3650:
-        return JSONResponse({"error": "'expires_in_days' must be an integer between 1 and 3650"}, status_code=422)
-
-    api_key = f"sk_{secrets.token_urlsafe(32)}"
-    expires_at = (datetime.now() + timedelta(days=expires_in_days)).isoformat()
-    API_KEYS[api_key] = {
-        "name": name,
-        "role": role,
-        "created_at": datetime.now().isoformat(),
-        "expires_at": expires_at,
-        "active": True,
-        "usage_count": 0,
-        "last_used": None,
-    }
-    await save_api_keys_async(API_KEYS)
-    return {"api_key": api_key, "name": name, "role": role, "expires_at": expires_at}
-
-
-@app.get("/api/admin/keys")
-async def list_api_keys(request: Request):
-    """Lists all registered API keys. SECURITY: Admin authentication required."""
-    admin_user, err_resp = await authenticate_admin_request(request, action="ADMIN_ACCESS", resource_type="api_key")
-    if err_resp:
-        return err_resp
-
-    keys_info = []
-    for key, info in API_KEYS.items():
-        keys_info.append({
-            "key_masked": security.mask_key(key),
-            "name": info.get("name"),
-            "role": info.get("role", "admin" if info.get("name") == ADMIN_KEY_NAME else "user"),
-            "active": info.get("active"),
-            "usage_count": info.get("usage_count"),
-            "last_used": info.get("last_used"),
-            "created_at": info.get("created_at"),
-            "expires_at": info.get("expires_at"),
-        })
-    return {"keys": keys_info}
-
-
-@app.get("/api/admin/audit-logs")
-async def admin_audit_logs(
-    request: Request,
-    action: Optional[str] = None,
-    actor: Optional[str] = None,
-    result: Optional[str] = None,
-    resource_type: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0,
-):
-    """Queries security audit logs. SECURITY: Admin authentication required."""
-    admin_user, err_resp = await authenticate_admin_request(request, action="ADMIN_ACCESS", resource_type="audit_log")
-    if err_resp:
-        return err_resp
-
-    logs = await security.get_audit_logs(
-        action=action,
-        actor_id=actor,
-        result=result,
-        resource_type=resource_type,
-        limit=limit,
-        offset=offset,
-    )
-    return JSONResponse(logs)
-
 ###############################################################################
 # ENTRY POINT
 ###############################################################################
@@ -1243,12 +1379,16 @@ if __name__ == "__main__":
     import uvicorn
     use_ssl = "--ssl" in sys.argv
     ssl_kwargs = {}
-    if use_ssl and Path("cert.pem").exists() and Path("key.pem").exists():
+
+    cert_path = BASE_DIR / "cert.pem" if (BASE_DIR / "cert.pem").exists() else (ROOT_DIR / "cert.pem")
+    key_path = BASE_DIR / "key.pem" if (BASE_DIR / "key.pem").exists() else (ROOT_DIR / "key.pem")
+
+    if use_ssl and cert_path.exists() and key_path.exists():
         ssl_kwargs = {
-            "ssl_keyfile": "key.pem",
-            "ssl_certfile": "cert.pem"
+            "ssl_keyfile": str(key_path),
+            "ssl_certfile": str(cert_path)
         }
-        log("Running with SSL (HTTPS)")
+        log(f"Running with SSL (HTTPS) [cert={cert_path.name}]")
     else:
         log("Running in standard HTTP mode (no self-signed certificate errors)")
 

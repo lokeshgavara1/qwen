@@ -15,46 +15,55 @@
     "name": "conv_tester",
     "role": "user",
     "active": true,
-    "created_at": "2026-09-16T15:08:46.502783",
+    "created_at": "2026-10-09T11:05:24.595784",
     "expires_at": null,
     "usage_count": 1,
-    "last_used": "2026-09-16T15:08:46.568730"
+    "last_used": "2026-10-09T11:05:24.598140"
   },
   "sk_test_admin_key_sec_001": {
     "name": "admin",
     "role": "admin",
     "active": true,
-    "created_at": "2026-09-16T15:08:49.176388",
-    "expires_at": "2026-10-16T15:08:49.176392"
+    "created_at": "2026-10-05T10:16:17.647918",
+    "expires_at": "2026-11-04T10:16:17.647923"
   },
   "sk_test_regular_user_sec_002": {
     "name": "developer_alice",
     "role": "user",
     "active": true,
-    "created_at": "2026-09-16T15:08:49.176398",
-    "expires_at": "2026-10-16T15:08:49.176398"
+    "created_at": "2026-10-05T10:16:17.647929",
+    "expires_at": "2026-11-04T10:16:17.647930"
   },
   "sk_test_expired_key_sec_003": {
     "name": "expired_user",
     "role": "admin",
     "active": true,
-    "created_at": "2026-08-07T15:08:49.176400",
-    "expires_at": "2026-09-06T15:08:49.176402"
+    "created_at": "2026-08-26T10:16:17.647932",
+    "expires_at": "2026-09-25T10:16:17.647933"
   },
-  "sk_eL8GZtbbi7cK-ms3w45_QVlbcxIyEZsh1Xohk4oqFtw": {
+  "sk_JrijHRmj_dQEIAnDjwGUe9k7N9Mk6clZvMnf73tuMzU": {
     "name": "new_team_key",
     "role": "user",
-    "created_at": "2026-09-16T15:08:49.119632",
-    "expires_at": "2026-10-16T15:08:49.119624",
+    "created_at": "2026-10-05T10:16:17.590687",
+    "expires_at": "2026-11-04T10:16:17.590678",
     "active": true,
     "usage_count": 0,
     "last_used": null
   },
-  "sk_PoYfYLZ0JGZRpv7MCKmEkmiVAg_OVxGDgPnUBOIqJdw": {
+  "sk_fFK1uSbhcdcEh1L1tXOdeYO3pAm94IiMeqaPtss3gh8": {
     "name": "audited_key",
     "role": "user",
-    "created_at": "2026-09-16T15:08:49.218276",
-    "expires_at": "2027-09-16T15:08:49.218266",
+    "created_at": "2026-10-05T10:16:17.693065",
+    "expires_at": "2027-10-05T10:16:17.693054",
+    "active": true,
+    "usage_count": 0,
+    "last_used": null
+  },
+  "sk_img_Pf_FVrGVeeEZmsRSpuinvGn6TZX_xOAIt-mJnluW_CQ": {
+    "name": "image_generation_client",
+    "role": "user",
+    "created_at": "2026-10-08T12:24:19.944630",
+    "expires_at": "2027-10-08T12:24:19.944614",
     "active": true,
     "usage_count": 0,
     "last_used": null

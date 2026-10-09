@@ -38,7 +38,7 @@ private_key = rsa.generate_private_key(
     key_size=4096,
     backend=default_backend()
 )
-print("✓ Private key generated")
+print("[OK] Private key generated")
 
 # Build certificate subject
 print("[2/4] Building certificate subject...")
@@ -49,7 +49,7 @@ subject = issuer = x509.Name([
     x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"CUTM"),
     x509.NameAttribute(NameOID.COMMON_NAME, u"172.16.8.4"),
 ])
-print("✓ Subject configured")
+print("[OK] Subject configured")
 
 # Build certificate
 print("[3/4] Building certificate...")
@@ -67,13 +67,17 @@ cert = x509.CertificateBuilder().subject_name(
     datetime.utcnow() + timedelta(days=3650)  # 10 years
 ).add_extension(
     x509.SubjectAlternativeName([
+        x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+        x509.IPAddress(ipaddress.IPv4Address("172.16.8.170")),
         x509.IPAddress(ipaddress.IPv4Address("172.16.8.4")),
-        x509.DNSName(u"172.16.8.4"),
         x509.DNSName(u"localhost"),
+        x509.DNSName(u"127.0.0.1"),
+        x509.DNSName(u"172.16.8.170"),
+        x509.DNSName(u"172.16.8.4"),
     ]),
     critical=False,
 ).sign(private_key, hashes.SHA256(), default_backend())
-print("✓ Certificate built")
+print("[OK] Certificate built")
 
 # Save private key
 print("[4/4] Saving certificate and key...")
@@ -83,28 +87,18 @@ with open("key.pem", "wb") as f:
         format=serialization.PrivateFormat.TraditionalOpenSSL,
         encryption_algorithm=serialization.NoEncryption()
     ))
-print("✓ Saved: key.pem")
+print("[OK] Saved: key.pem")
 
 # Save certificate
 with open("cert.pem", "wb") as f:
     f.write(cert.public_bytes(serialization.Encoding.PEM))
-print("✓ Saved: cert.pem")
+print("[OK] Saved: cert.pem")
 
 print("\n" + "=" * 70)
-print("✓ SUCCESS! Certificate generated")
+print("[OK] SUCCESS! Certificate generated")
 print("=" * 70)
 print("\nFiles created:")
-print("  • cert.pem (certificate)")
-print("  • key.pem (private key)")
+print("  - cert.pem (certificate)")
+print("  - key.pem (private key)")
 print("\nPlace these files in the SAME folder as qwen_lb.py")
-print("\nThen update qwen_lb.py:")
-print("  uvicorn.run(")
-print("      app,")
-print("      host='0.0.0.0',")
-print("      port=8000,")
-print("      ssl_keyfile='key.pem',")
-print("      ssl_certfile='cert.pem',")
-print("      log_level='info'")
-print("  )")
-print("\nThen restart gateway: python qwen_lb.py")
 print("=" * 70)
