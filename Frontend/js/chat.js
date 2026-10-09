@@ -1,7 +1,7 @@
 // Chat state, rendering, and message lifecycle — operates on one
 // conversation at a time, backed by the multi-conversation store.
 
-import { generateResponse, GatewayError, RateLimitError } from './api.js';
+import { generateResponse, GatewayError } from './api.js';
 import * as store from './conversations.js';
 import {
   validateInput, detectIntent, formatMessageHtml, getTimeString,
@@ -260,7 +260,8 @@ export class Chat {
       if (liveBubble) liveBubble.remove();
 
       let message;
-      if (err instanceof RateLimitError) {
+      const isRateLimit = err.name === 'RateLimitError' || err.status === 429;
+      if (isRateLimit) {
         const waitHint = err.retryAfter ? ` Please wait ${err.retryAfter}s.` : '';
         message = `⏳ ${err.message}${waitHint}`;
       } else if (err instanceof GatewayError) {
@@ -280,7 +281,7 @@ export class Chat {
       this.renderMessage(errMsg);
       this.scrollToBottom();
       this.persist();
-      showNotification(message, err instanceof RateLimitError ? 'warn' : 'error');
+      showNotification(message, isRateLimit ? 'warn' : 'error');
     }
   }
 
