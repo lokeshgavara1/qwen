@@ -12,12 +12,42 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 try:
+    import json
+    import struct
     import torch
+    import safetensors.torch
     from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
+
+    def _load_safetensors_patch(file_path, device="cpu"):
+        dtype_map = {
+            "F16": torch.float16, "F32": torch.float32, "BF16": torch.bfloat16,
+            "I64": torch.int64, "I32": torch.int32, "I16": torch.int16,
+            "I8": torch.int8, "U8": torch.uint8, "BOOL": torch.bool,
+        }
+        with open(file_path, "rb") as f:
+            header_size_bytes = f.read(8)
+            header_size = struct.unpack("<Q", header_size_bytes)[0]
+            header_json = f.read(header_size).decode("utf-8")
+            header = json.loads(header_json)
+            offset_base = 8 + header_size
+            state_dict = {}
+            for k, meta in header.items():
+                if k == "__metadata__":
+                    continue
+                dtype = dtype_map.get(meta["dtype"], torch.float32)
+                shape = meta["shape"]
+                start_off, end_off = meta["data_offsets"]
+                f.seek(offset_base + start_off)
+                raw_bytes = f.read(end_off - start_off)
+                state_dict[k] = torch.frombuffer(raw_bytes, dtype=dtype).clone().reshape(shape)
+        return state_dict
+
+    safetensors.torch.load_file = _load_safetensors_patch
     DIFFUSION_AVAILABLE = True
 except ImportError:
     torch = None
     DIFFUSION_AVAILABLE = False
+
 
 
 BASE_DIR = Path(__file__).resolve().parent
