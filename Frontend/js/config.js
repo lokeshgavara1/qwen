@@ -3,10 +3,10 @@
 
 export const APP_NAME = 'CUTM AI Gateway Chat Frontend';
 
-// Auto-detect gateway URL: uses current origin (for NGINX reverse-proxy & direct gateway access)
+// Auto-detect gateway URL: uses current browser origin
 export const GATEWAY_URL = (() => {
   const custom = typeof localStorage !== 'undefined' ? localStorage.getItem('aig_gateway_url') : null;
-  if (custom) return custom;
+  if (custom && !custom.includes('172.16.8.4')) return custom;
 
   if (typeof window !== 'undefined' && window.location.origin) {
     return window.location.origin;

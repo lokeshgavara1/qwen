@@ -141,7 +141,8 @@ export async function generateResponse(prompt, {
 }
 
 export function getHealth() {
-  return request(ENDPOINTS.HEALTH);
+  return request(ENDPOINTS.HEALTH, { timeoutMs: 5000 });
 }
 
 export { GatewayError };
+
