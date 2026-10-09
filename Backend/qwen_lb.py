@@ -1371,6 +1371,11 @@ async def status():
         "token_limits": MAX_TOKENS_BY_TYPE,
     }
 
+@app.get("/api/usage")
+async def api_usage():
+    return JSONResponse({"status": "ok", "usage": "unlimited"})
+
+
 ###############################################################################
 # ENTRY POINT
 ###############################################################################
