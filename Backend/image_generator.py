@@ -11,7 +11,14 @@ from pathlib import Path
 import time
 from typing import Any, Dict, Optional, Tuple
 
-import torch
+try:
+    import torch
+    from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
+    DIFFUSION_AVAILABLE = True
+except ImportError:
+    torch = None
+    DIFFUSION_AVAILABLE = False
+
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent if BASE_DIR.name == "Backend" else BASE_DIR
@@ -26,18 +33,13 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _sd_pipeline: Optional[Any] = None
 _pipeline_lock = asyncio.Lock()
-DIFFUSION_AVAILABLE = False
-
-try:
-    from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
-    DIFFUSION_AVAILABLE = True
-except ImportError:
-    DIFFUSION_AVAILABLE = False
 
 
 def is_available() -> bool:
-    """Check if diffusers and model file are present."""
-    return DIFFUSION_AVAILABLE and Path(DIFFUSION_MODEL_PATH).exists()
+    """Check if diffusers, torch and model file are present."""
+    return DIFFUSION_AVAILABLE and torch is not None and Path(DIFFUSION_MODEL_PATH).exists()
+
+
 
 
 def get_pipeline():
