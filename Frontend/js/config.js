@@ -3,23 +3,15 @@
 
 export const APP_NAME = 'CUTM AI Gateway Chat Frontend';
 
-// Auto-detect gateway URL with support for localhost, custom override, and university network
+// Auto-detect gateway URL: uses current origin (for NGINX reverse-proxy & direct gateway access)
 export const GATEWAY_URL = (() => {
   const custom = typeof localStorage !== 'undefined' ? localStorage.getItem('aig_gateway_url') : null;
   if (custom) return custom;
 
-  if (typeof window !== 'undefined') {
-    // If running directly on the gateway port 8000, use same origin
-    if (window.location.port === '8000') {
-      return window.location.origin;
-    }
-    // If running on local dev server (e.g., :3000, :5500)
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return 'http://localhost:8000';
-    }
+  if (typeof window !== 'undefined' && window.location.origin) {
+    return window.location.origin;
   }
-  // Default to gateway internal IP over HTTP
-  return 'http://172.16.8.4:8000';
+  return '';
 })();
 
 export const TARGET_HOST = 'qwen.cutm.ac.in';
