@@ -13,6 +13,14 @@ class GatewayError extends Error {
   }
 }
 
+class RateLimitError extends GatewayError {
+  constructor(message, retryAfter = null) {
+    super(message, 429);
+    this.name = 'RateLimitError';
+    this.retryAfter = retryAfter;
+  }
+}
+
 
 async function request(path, { method = 'GET', body, signal, timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
@@ -29,6 +37,9 @@ async function request(path, { method = 'GET', body, signal, timeoutMs = 15000 }
 
     if (!res.ok) {
       const errData = safeJsonParse(await res.text().catch(() => ''));
+      if (res.status === 429) {
+        throw new RateLimitError(errData?.error || 'Rate limit reached', errData?.retry_after);
+      }
       throw new GatewayError(errData?.error || `Gateway responded with ${res.status}`, res.status);
     }
     return res.json();
@@ -80,6 +91,9 @@ export async function generateResponse(prompt, {
 
   if (!res.ok) {
     const errData = safeJsonParse(await res.text().catch(() => ''));
+    if (res.status === 429) {
+      throw new RateLimitError(errData?.error || 'Rate limit reached', errData?.retry_after);
+    }
     throw new GatewayError(errData?.error || `Gateway responded with ${res.status}`, res.status);
   }
 
@@ -144,5 +158,6 @@ export function getHealth() {
   return request(ENDPOINTS.HEALTH, { timeoutMs: 5000 });
 }
 
-export { GatewayError };
+export { GatewayError, RateLimitError };
+
 
