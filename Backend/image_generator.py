@@ -1,6 +1,6 @@
 """
-Image Generation Engine using Stable Diffusion v1.5 Safetensors.
-Supports GPU (CUDA) acceleration with torch.float16 and attention slicing for optimal VRAM usage.
+Image Generation Engine using FLUX.1 [schnell] with 4-bit NF4 Quantization.
+Optimized for NVIDIA RTX GPUs with 16GB VRAM on D: drive cache.
 """
 
 import asyncio
@@ -9,112 +9,76 @@ import io
 import os
 from pathlib import Path
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
+
+# Ensure Hugging Face loads directly from D: drive cache
+os.environ["HF_HOME"] = "D:/hf_cache"
 
 try:
-    import json
-    import struct
     import torch
-    import safetensors.torch
-    from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
-
-    def _load_safetensors_patch(file_path, device="cpu"):
-        dtype_map = {
-            "F16": torch.float16, "F32": torch.float32, "BF16": torch.bfloat16,
-            "I64": torch.int64, "I32": torch.int32, "I16": torch.int16,
-            "I8": torch.int8, "U8": torch.uint8, "BOOL": torch.bool,
-        }
-        with open(file_path, "rb") as f:
-            header_size_bytes = f.read(8)
-            header_size = struct.unpack("<Q", header_size_bytes)[0]
-            header_json = f.read(header_size).decode("utf-8")
-            header = json.loads(header_json)
-            offset_base = 8 + header_size
-            state_dict = {}
-            for k, meta in header.items():
-                if k == "__metadata__":
-                    continue
-                dtype = dtype_map.get(meta["dtype"], torch.float32)
-                shape = meta["shape"]
-                start_off, end_off = meta["data_offsets"]
-                f.seek(offset_base + start_off)
-                raw_bytes = f.read(end_off - start_off)
-                state_dict[k] = torch.frombuffer(raw_bytes, dtype=dtype).clone().reshape(shape)
-        return state_dict
-
-    safetensors.torch.load_file = _load_safetensors_patch
+    from diffusers import FluxPipeline, FluxTransformer2DModel
+    from transformers import BitsAndBytesConfig
     DIFFUSION_AVAILABLE = True
 except ImportError:
     torch = None
     DIFFUSION_AVAILABLE = False
 
 
-
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent if BASE_DIR.name == "Backend" else BASE_DIR
 
-DEFAULT_MODEL_PATH = BASE_DIR / "Image-Generation" / "v1-5-pruned.safetensors"
-if not DEFAULT_MODEL_PATH.exists():
-    DEFAULT_MODEL_PATH = ROOT_DIR / "Image-Generation" / "v1-5-pruned.safetensors"
-
-DIFFUSION_MODEL_PATH = os.getenv("DIFFUSION_MODEL_PATH", str(DEFAULT_MODEL_PATH))
 OUTPUT_DIR = BASE_DIR / "generated_images" if (BASE_DIR / "generated_images").exists() else ROOT_DIR / "generated_images"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-_sd_pipeline: Optional[Any] = None
+MODEL_ID = "black-forest-labs/FLUX.1-schnell"
+CACHE_DIR = Path("D:/hf_cache")
+
+_flux_pipeline: Optional[Any] = None
 _pipeline_lock = asyncio.Lock()
 
 
 def is_available() -> bool:
-    """Check if diffusers, torch and model file are present."""
-    return DIFFUSION_AVAILABLE and torch is not None and Path(DIFFUSION_MODEL_PATH).exists()
-
-
+    """Check if torch, diffusers, and FLUX model are available."""
+    return DIFFUSION_AVAILABLE and torch is not None and torch.cuda.is_available() and CACHE_DIR.exists()
 
 
 def get_pipeline():
-    """Synchronous pipeline loader with optimizations for RTX GPUs."""
-    global _sd_pipeline
-    if _sd_pipeline is not None:
-        return _sd_pipeline
+    """Synchronous pipeline loader with 4-bit NF4 quantization for 16GB RTX 4060 Ti."""
+    global _flux_pipeline
+    if _flux_pipeline is not None:
+        return _flux_pipeline
 
     if not is_available():
-        raise RuntimeError(
-            f"Diffusion pipeline unavailable. diffusers={DIFFUSION_AVAILABLE}, file_exists={Path(DIFFUSION_MODEL_PATH).exists()} ({DIFFUSION_MODEL_PATH})"
-        )
+        raise RuntimeError("FLUX engine is unavailable. Ensure torch with CUDA and D:/hf_cache are present.")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
-
-    print(f"[{time.strftime('%H:%M:%S')}] Loading Stable Diffusion pipeline from {DIFFUSION_MODEL_PATH} ({device}, {dtype})...", flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] Loading FLUX.1 [schnell] (4-bit NF4) from {CACHE_DIR}...", flush=True)
     t0 = time.perf_counter()
 
-    pipe = StableDiffusionPipeline.from_single_file(
-        DIFFUSION_MODEL_PATH,
-        torch_dtype=dtype,
-        use_safetensors=True,
-        safety_checker=None,
-        requires_safety_checker=False,
+    # 4-bit quantization config: fits transformer inside ~6-8 GB VRAM
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
     )
 
-    # Use DPM-Solver++ for faster convergence (15-25 steps is enough for high quality)
-    try:
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
-    except Exception:
-        pass
+    transformer = FluxTransformer2DModel.from_pretrained(
+        MODEL_ID,
+        subfolder="transformer",
+        quantization_config=quantization_config,
+        torch_dtype=torch.bfloat16,
+    )
 
-    pipe = pipe.to(device)
+    pipe = FluxPipeline.from_pretrained(
+        MODEL_ID,
+        transformer=transformer,
+        torch_dtype=torch.bfloat16,
+    )
+    pipe.enable_model_cpu_offload()
 
-    if device == "cuda":
-        try:
-            pipe.enable_attention_slicing()
-        except Exception:
-            pass
-
-    _sd_pipeline = pipe
+    _flux_pipeline = pipe
     load_time = round(time.perf_counter() - t0, 2)
-    print(f"[{time.strftime('%H:%M:%S')}] Stable Diffusion pipeline loaded in {load_time}s [OK]", flush=True)
-    return _sd_pipeline
+    print(f"[{time.strftime('%H:%M:%S')}] FLUX.1 [schnell] pipeline loaded in {load_time}s [OK]", flush=True)
+    return _flux_pipeline
 
 
 def _run_inference_sync(
@@ -122,43 +86,51 @@ def _run_inference_sync(
     negative_prompt: str = "",
     width: int = 512,
     height: int = 512,
-    num_inference_steps: int = 25,
-    guidance_scale: float = 7.5,
+    num_inference_steps: int = 4,
+    guidance_scale: float = 0.0,
     seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Synchronous inference worker executed in background thread."""
     pipe = get_pipeline()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if seed is None or seed < 0:
-        generator = None
         actual_seed = torch.randint(0, 2**32 - 1, (1,)).item()
     else:
         actual_seed = int(seed)
-        generator = torch.Generator(device=device).manual_seed(actual_seed)
 
-    # Restrict width/height to multiples of 8 and reasonable limits
-    width = max(256, min(1024, (width // 8) * 8))
-    height = max(256, min(1024, (height // 8) * 8))
-    num_inference_steps = max(10, min(50, int(num_inference_steps)))
+    generator = torch.Generator(device="cpu").manual_seed(actual_seed)
+
+    # Restrict width/height to multiples of 16 (required by FLUX DiT)
+    width = max(256, min(1536, (width // 16) * 16))
+    height = max(256, min(1536, (height // 16) * 16))
+
+    # FLUX schnell operates optimally in 4 steps. If legacy clients send 25, clamp to 4.
+    if num_inference_steps > 8:
+        num_inference_steps = 4
+    else:
+        num_inference_steps = max(1, min(8, int(num_inference_steps)))
+
+    # FLUX schnell uses guidance_scale=0.0. If legacy clients send 7.5, clamp to 0.0.
+    if guidance_scale > 3.0:
+        guidance_scale = 0.0
 
     t0 = time.perf_counter()
 
     with torch.inference_mode():
         result = pipe(
             prompt=prompt,
-            negative_prompt=negative_prompt or "ugly, blurry, bad anatomy, bad hands, cropped, low quality, artifact",
             width=width,
             height=height,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
+            max_sequence_length=256,
             generator=generator,
         )
 
     image = result.images[0]
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    file_name = f"img_{actual_seed}_{int(time.time()*1000)}.png"
+    file_name = f"flux_{actual_seed}_{int(time.time()*1000)}.png"
     file_path = OUTPUT_DIR / file_name
     image.save(file_path, format="PNG")
     rel_url = f"/generated_images/{file_name}"
@@ -190,8 +162,8 @@ async def generate_image_async(
     negative_prompt: str = "",
     width: int = 512,
     height: int = 512,
-    num_inference_steps: int = 25,
-    guidance_scale: float = 7.5,
+    num_inference_steps: int = 4,
+    guidance_scale: float = 0.0,
     seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Asynchronous wrapper that offloads heavy diffusion generation to threadpool."""
