@@ -643,23 +643,23 @@ async def generate(request: Request):
 
         # Respect explicit model if provided and valid, otherwise auto-select
         requested_model = body.get("model")
-        if requested_model and requested_model in ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "stable-diffusion", "sd15", "diffusion", "image-gen"]:
+        if requested_model and requested_model in ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "flux", "flux-schnell", "flux.1", "stable-diffusion", "sd15", "diffusion", "image-gen"]:
             model = requested_model
         else:
             model = select_model(intent)
         body["model"] = model
 
         # ── Fast-path for Image Generation Intent ────────────────────────────
-        is_explicit_image_req = requested_model in ["stable-diffusion", "sd15", "diffusion", "image-gen"]
+        is_explicit_image_req = requested_model in ["flux", "flux-schnell", "flux.1", "stable-diffusion", "sd15", "diffusion", "image-gen"]
         if intent == IMAGE_GEN or is_explicit_image_req:
             if not image_generator.is_available():
                 if is_explicit_image_req:
                     return JSONResponse(
-                        {"error": "Image generation engine (Stable Diffusion v1.5) is not installed on this server.", "conversation_id": conversation_id},
+                        {"error": "Image generation engine (FLUX.1 [schnell] 4-bit) is not installed on this server.", "conversation_id": conversation_id},
                         status_code=503
                     )
                 else:
-                    log(f"[IMAGE_GEN] Image generation requested but diffusion model weights are not loaded. Routing to LLM...")
+                    log(f"[IMAGE_GEN] Image generation requested but FLUX model weights are not loaded. Routing to LLM...")
                     intent = CHAT
             else:
                 clean_prompt = prompt
@@ -680,8 +680,8 @@ async def generate(request: Request):
                 try:
                     gen_result = await image_generator.generate_image_async(
                         prompt=clean_prompt or prompt,
-                        num_inference_steps=25,
-                        guidance_scale=7.5,
+                        num_inference_steps=4,
+                        guidance_scale=0.0,
                     )
                     elapsed = gen_result["latency_ms"]
                     img_url = gen_result["image_url"]
@@ -697,7 +697,7 @@ async def generate(request: Request):
                     if stream:
                         async def img_stream():
                             chunk_dict = {
-                                "model": "stable-diffusion-v1.5",
+                                "model": "FLUX.1-schnell",
                                 "response": formatted_md,
                                 "done": True,
                                 "eval_count": 50,
@@ -711,12 +711,12 @@ async def generate(request: Request):
                         return StreamingResponse(
                             img_stream(),
                             media_type="application/x-ndjson",
-                            headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
+                            headers={"X-Server": "local-diffusion", "X-Model": "FLUX.1-schnell", "X-Conversation-ID": conversation_id}
                         )
                     else:
                         return JSONResponse(
                             content={
-                                "model": "stable-diffusion-v1.5",
+                                "model": "FLUX.1-schnell",
                                 "response": formatted_md,
                                 "image_url": img_url,
                                 "seed": gen_result["seed"],
@@ -1270,8 +1270,8 @@ async def api_generate_image(request: Request):
     neg_prompt = body.get("negative_prompt", "")
     width = int(body.get("width", 512))
     height = int(body.get("height", 512))
-    steps = int(body.get("steps", 25))
-    guidance = float(body.get("guidance_scale", 7.5))
+    steps = int(body.get("steps", 4))
+    guidance = float(body.get("guidance_scale", 0.0))
     seed = body.get("seed")
     if seed is not None:
         try:
@@ -1281,7 +1281,7 @@ async def api_generate_image(request: Request):
 
     if not image_generator.is_available():
         return JSONResponse(
-            {"error": "Stable Diffusion model (v1-5-pruned.safetensors) is not installed on this server."},
+            {"error": "FLUX.1 [schnell] 4-bit model is not available or cache is missing."},
             status_code=503
         )
 
@@ -1322,7 +1322,7 @@ async def openai_images_generations(request: Request):
     """OpenAI-compatible image generation endpoint."""
     if not image_generator.is_available():
         return JSONResponse(
-            {"error": "Stable Diffusion model (v1-5-pruned.safetensors) is not installed on this server."},
+            {"error": "FLUX.1 [schnell] 4-bit model is not available or cache is missing."},
             status_code=503
         )
 

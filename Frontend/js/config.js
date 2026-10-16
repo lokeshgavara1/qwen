@@ -21,7 +21,7 @@ export const MODEL_OPTIONS = [
   { value: AUTO_MODEL, label: 'Auto (Smart Router)', description: 'Picks the right model per message' },
   { value: 'mistral:7b', label: 'Mistral 7B', description: 'Chat, coding, reasoning' },
   { value: 'qwen2.5vl:7b', label: 'Qwen2.5-VL 7B', description: 'Vision & Multimodal' },
-  { value: 'stable-diffusion', label: '🎨 Stable Diffusion v1.5', description: 'AI Image Generation' },
+  { value: 'flux', label: '🎨 FLUX.1 [schnell]', description: 'High-Fidelity AI Image Generation' },
 ];
 
 export const INTENTS = {
