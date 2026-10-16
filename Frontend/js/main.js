@@ -308,7 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (studioStatusMsg) {
         studioStatusMsg.style.display = 'block';
         studioStatusMsg.style.color = '#38bdf8';
-        studioStatusMsg.textContent = 'Running Stable Diffusion v1.5 with PyTorch CUDA...';
+        studioStatusMsg.textContent = 'Generating with FLUX.1 [schnell] (4-bit CUDA)...';
       }
       if (studioPreviewBox) studioPreviewBox.style.display = 'none';
 
@@ -319,8 +319,8 @@ document.addEventListener('DOMContentLoaded', () => {
           body: JSON.stringify({
             prompt,
             negative_prompt: studioNegPrompt ? studioNegPrompt.value.trim() : '',
-            steps: studioSteps ? parseInt(studioSteps.value, 10) : 25,
-            guidance_scale: studioGuidance ? parseFloat(studioGuidance.value) : 7.5,
+            steps: studioSteps ? parseInt(studioSteps.value, 10) : 4,
+            guidance_scale: studioGuidance ? parseFloat(studioGuidance.value) : 0.0,
           }),
         });
 

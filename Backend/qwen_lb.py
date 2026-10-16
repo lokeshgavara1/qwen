@@ -439,14 +439,15 @@ async def warmup_models():
     for role, state in SERVER_STATE.items():
         if not state["online"]:
             continue
+        keep_alive = "5m" if role == "local" else "24h"
         for model in state["models"]:
             try:
                 await http_client.post(
                     f"{state['url']}/api/generate",
-                    json={"model": model, "prompt": "hi", "stream": False, "keep_alive": "24h"},
+                    json={"model": model, "prompt": "hi", "stream": False, "keep_alive": keep_alive},
                     timeout=30.0
                 )
-                log(f"[OK] Warmed {model} on {role} (keep_alive=24h)")
+                log(f"[OK] Warmed {model} on {role} (keep_alive={keep_alive})")
             except Exception as e:
                 pass
 

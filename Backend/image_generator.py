@@ -81,6 +81,24 @@ def get_pipeline():
     return _flux_pipeline
 
 
+def _free_local_vram():
+    """Release VRAM from local Ollama models before running FLUX to avoid PCIe thrashing."""
+    try:
+        import urllib.request
+        import json
+        for m in ["mistral:7b", "qwen2.5vl:7b"]:
+            req = urllib.request.Request(
+                "http://127.0.0.1:11434/api/generate",
+                data=json.dumps({"model": m, "keep_alive": 0}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req, timeout=1.0)
+    except Exception:
+        pass
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _run_inference_sync(
     prompt: str,
     negative_prompt: str = "",
@@ -91,6 +109,7 @@ def _run_inference_sync(
     seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Synchronous inference worker executed in background thread."""
+    _free_local_vram()
     pipe = get_pipeline()
 
     if seed is None or seed < 0:
