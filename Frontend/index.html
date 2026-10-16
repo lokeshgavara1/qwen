@@ -4,9 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>⚡ Qwen Chat — CUTM AI Gateway</title>
-<link rel="stylesheet" href="css/main.css">
-<link rel="stylesheet" href="css/chat.css">
-<link rel="stylesheet" href="css/responsive.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/main.css?v=7">
+<link rel="stylesheet" href="css/chat.css?v=7">
+<link rel="stylesheet" href="css/responsive.css?v=7">
 </head>
 <body>
 <div class="app-shell" id="app-shell">
@@ -15,14 +18,18 @@
 
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      ⚡ Qwen Chat
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">Qwen Chat</span>
     </div>
 
     <button type="button" class="new-chat-btn" id="new-chat-btn">
-      <span>＋</span> New chat
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>New chat</span>
     </button>
-    <button type="button" class="new-chat-btn" id="image-studio-sidebar-btn" style="margin-top: 8px; background: linear-gradient(135deg, rgba(56,189,248,0.15), rgba(168,85,247,0.15)); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8;">
-      <span>🎨</span> Image Studio
+    <button type="button" class="new-chat-btn studio-sidebar-btn" id="image-studio-sidebar-btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>
+      <span>Image Studio</span>
+      <span class="badge-mini">FLUX</span>
     </button>
 
     <div class="conv-list-label">Recent</div>
@@ -40,14 +47,37 @@
 
   <div class="main-panel">
     <header class="topbar">
-      <button type="button" class="icon-btn sidebar-toggle" id="sidebar-toggle" title="Menu">☰</button>
-      <div class="topbar-title">⚡ Qwen AI Gateway</div>
+      <button type="button" class="icon-btn sidebar-toggle" id="sidebar-toggle" title="Toggle Menu">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+
+      <div class="topbar-brand">
+        <span class="topbar-logo">⚡</span>
+        <span class="topbar-title">Qwen AI Gateway</span>
+        <span class="topbar-tag">v2.5</span>
+      </div>
+
       <div class="topbar-actions">
-        <button type="button" class="icon-btn" id="image-studio-btn" title="AI Image Studio (Stable Diffusion)" style="color: #38bdf8; font-weight: 600;">🎨 Image Studio</button>
-        <button type="button" class="icon-btn" id="export-json-btn" title="Export chat as JSON">⬇️</button>
-        <button type="button" class="icon-btn" id="export-txt-btn" title="Export chat as TXT">📄</button>
-        <button type="button" class="icon-btn" id="clear-chat-btn" title="Delete this conversation">🗑️</button>
-        <button type="button" class="icon-btn" id="shortcuts-toggle" title="Keyboard shortcuts">❓</button>
+        <button type="button" class="studio-nav-btn" id="image-studio-btn" title="AI Image Studio (Powered by FLUX.1 [schnell])">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+          <span>Image Studio</span>
+          <span class="studio-badge">FLUX</span>
+        </button>
+
+        <div class="topbar-divider"></div>
+
+        <button type="button" class="icon-btn" id="export-json-btn" title="Export conversation as JSON" aria-label="Export JSON">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="export-txt-btn" title="Export conversation as Text" aria-label="Export TXT">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        </button>
+        <button type="button" class="icon-btn danger-hover" id="clear-chat-btn" title="Clear conversation" aria-label="Clear chat">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="shortcuts-toggle" title="Keyboard shortcuts" aria-label="Shortcuts">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </button>
       </div>
     </header>
 
@@ -55,25 +85,39 @@
       <div class="chat-scroll-inner">
 
         <div class="welcome" id="welcome">
-          <div class="welcome-icon">⚡</div>
+          <div class="welcome-badge">
+            <span class="badge-pulse"></span> Next-Gen Multi-Model AI
+          </div>
           <h1>What can I help with?</h1>
-          <p>Chat, coding help, reasoning, image analysis, or <strong>AI image generation</strong> — powered by Mistral 7B, Qwen 2.5-VL, and Stable Diffusion v1.5.</p>
+          <p>Smart coding, multimodal reasoning, vision, or <strong>high-fidelity AI image generation</strong> — powered by Qwen 2.5, Mistral, and FLUX.1 [schnell].</p>
           <div class="suggestion-grid">
-            <button type="button" class="suggestion-card" data-prompt="Generate an image of a futuristic cyberpunk city at night with neon lights, 8k, highly detailed">
-              <span class="suggestion-title">🎨 Generate an image</span>
-              <span class="suggestion-sub">Stable Diffusion v1.5 · Text to Image</span>
+            <button type="button" class="suggestion-card" data-prompt="A futuristic cyberpunk poster of an engineering robot with glowing neon circuitry, 8k, photorealistic">
+              <span class="suggestion-icon">✨</span>
+              <div class="suggestion-content">
+                <span class="suggestion-title">Generate with FLUX</span>
+                <span class="suggestion-sub">FLUX.1 [schnell] · Ultra-Fast AI Art</span>
+              </div>
             </button>
-            <button type="button" class="suggestion-card" data-prompt="Explain how async/await works in JavaScript, with a short example.">
-              <span class="suggestion-title">💻 Explain async/await</span>
-              <span class="suggestion-sub">Coding · JavaScript concept</span>
+            <button type="button" class="suggestion-card" data-prompt="Explain how async/await works in JavaScript, with a short practical example.">
+              <span class="suggestion-icon">⚡</span>
+              <div class="suggestion-content">
+                <span class="suggestion-title">Explain async/await</span>
+                <span class="suggestion-sub">Coding · JavaScript concept</span>
+              </div>
             </button>
-            <button type="button" class="suggestion-card" data-prompt="What's the difference between TCP and UDP?">
-              <span class="suggestion-title">🧠 TCP vs UDP</span>
-              <span class="suggestion-sub">Reasoning · Networking basics</span>
+            <button type="button" class="suggestion-card" data-prompt="What's the difference between TCP and UDP? Give real-world examples.">
+              <span class="suggestion-icon">🌐</span>
+              <div class="suggestion-content">
+                <span class="suggestion-title">TCP vs UDP</span>
+                <span class="suggestion-sub">Reasoning · Networking basics</span>
+              </div>
             </button>
-            <button type="button" class="suggestion-card" data-prompt="Write a Python function that checks if a string is a palindrome.">
-              <span class="suggestion-title">🐍 Palindrome function</span>
-              <span class="suggestion-sub">Coding · Python</span>
+            <button type="button" class="suggestion-card" data-prompt="Write an optimized Python function that checks if a string is a palindrome.">
+              <span class="suggestion-icon">🐍</span>
+              <div class="suggestion-content">
+                <span class="suggestion-title">Palindrome function</span>
+                <span class="suggestion-sub">Coding · Python algorithm</span>
+              </div>
             </button>
           </div>
         </div>
@@ -90,7 +134,9 @@
             <textarea id="chat-input" rows="1" placeholder="Message Qwen Chat…" maxlength="4000"></textarea>
             <div class="composer-toolbar">
               <select id="model-select" class="model-select" title="Model"></select>
-              <button type="submit" id="send-btn" class="btn send-btn" title="Send">➤</button>
+              <button type="submit" id="send-btn" class="btn send-btn" title="Send message" aria-label="Send">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              </button>
             </div>
           </div>
         </form>
@@ -119,7 +165,7 @@
           <span style="font-size: 1.6rem;">🎨</span>
           <div>
             <h2 style="font-size: 1.25rem; margin: 0; font-weight: 700; color: #38bdf8;">AI Image Studio</h2>
-            <span style="font-size: 0.8rem; color: #94a3b8;">Stable Diffusion v1.5 · CUDA GPU Accelerated</span>
+            <span style="font-size: 0.8rem; color: #94a3b8;">FLUX.1 [schnell] · 4-bit CUDA Accelerated</span>
           </div>
         </div>
         <button type="button" id="close-image-studio-btn" style="background: transparent; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">✕</button>
@@ -138,12 +184,12 @@
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
           <div>
-            <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Inference Steps: <span id="studio-steps-val" style="color: #38bdf8;">25</span></label>
-            <input type="range" id="studio-steps" min="10" max="40" value="25" style="width: 100%; accent-color: #38bdf8;" />
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Inference Steps: <span id="studio-steps-val" style="color: #38bdf8;">4</span></label>
+            <input type="range" id="studio-steps" min="1" max="8" value="4" style="width: 100%; accent-color: #38bdf8;" />
           </div>
           <div>
-            <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Guidance Scale: <span id="studio-guidance-val" style="color: #38bdf8;">7.5</span></label>
-            <input type="range" id="studio-guidance" min="1" max="15" step="0.5" value="7.5" style="width: 100%; accent-color: #38bdf8;" />
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Guidance Scale: <span id="studio-guidance-val" style="color: #38bdf8;">0.0</span></label>
+            <input type="range" id="studio-guidance" min="0" max="5" step="0.5" value="0.0" style="width: 100%; accent-color: #38bdf8;" />
           </div>
         </div>
 
@@ -172,6 +218,6 @@
 
 </div>
 
-<script type="module" src="js/main.js?v=5"></script>
+<script type="module" src="js/main.js?v=7"></script>
 </body>
 </html>

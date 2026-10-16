@@ -1,11 +1,14 @@
 /* Breakpoints: mobile < 768px, tablet 768-1024px, desktop > 1024px */
 
 /* Touch-friendly baseline for all buttons */
-.btn, .new-chat-btn, .icon-btn {
-  min-height: 44px;
+.btn:not(.send-btn):not(.icon-btn), .new-chat-btn {
+  min-height: 40px;
+}
+.icon-btn {
+  min-height: 34px;
 }
 .msg-action-btn { min-height: 28px; min-width: 28px; }
-.send-btn { min-height: 40px; }
+.send-btn { min-height: 34px; }
 
 /* Larger tap targets on touch devices where the pointer is a finger, not a cursor. */
 @media (hover: none) or (pointer: coarse) {
