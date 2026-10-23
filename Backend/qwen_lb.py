@@ -373,6 +373,10 @@ class SmartScheduler:
                 return {"url": SERVER_STATE[any_online[0]]["url"], "role": any_online[0]}
             return None
 
+        # Prefer local GPU worker when available for instant sub-second responses
+        if "local" in candidates and SERVER_STATE.get("local", {}).get("queue", 0) < 2:
+            return {"url": SERVER_STATE["local"]["url"], "role": "local"}
+
         # Pick candidate with lowest queue, then lowest latency, then priority
         best_role = min(
             candidates,
@@ -406,7 +410,7 @@ class SmartScheduler:
 async def ping_server(role: str, state: Dict):
     t0 = time.perf_counter()
     try:
-        res = await http_client.get(f"{state['url']}/api/tags", timeout=1.8)
+        res = await http_client.get(f"{state['url']}/api/tags", timeout=0.8)
         if res.status_code == 200:
             elapsed = round((time.perf_counter() - t0) * 1000, 1)
             state["online"] = True
@@ -439,13 +443,13 @@ async def warmup_models():
     for role, state in SERVER_STATE.items():
         if not state["online"]:
             continue
-        keep_alive = "5m" if role == "local" else "24h"
+        keep_alive = "24h"
         for model in state["models"]:
             try:
                 await http_client.post(
                     f"{state['url']}/api/generate",
                     json={"model": model, "prompt": "hi", "stream": False, "keep_alive": keep_alive},
-                    timeout=30.0
+                    timeout=15.0
                 )
                 log(f"[OK] Warmed {model} on {role} (keep_alive={keep_alive})")
             except Exception as e:
@@ -484,8 +488,19 @@ async def lifespan(app: FastAPI):
     online = [r for r, s in SERVER_STATE.items() if s["online"]]
     log(f"Initial online workers ({len(online)}/{len(SERVER_STATE)}): {', '.join(online)}")
 
+    async def prewarm_image_pipeline():
+        await asyncio.sleep(1.5)
+        if image_generator.is_available():
+            try:
+                log("Pre-warming FLUX image generation pipeline in background...")
+                await asyncio.to_thread(image_generator.get_pipeline)
+                log("FLUX image generation pipeline pre-warmed and ready [OK]")
+            except Exception as e:
+                log(f"FLUX pipeline pre-warm deferred: {e}")
+
     health_task = asyncio.create_task(periodic_health_check())
     warmup_task = asyncio.create_task(warmup_models())
+    flux_prewarm_task = asyncio.create_task(prewarm_image_pipeline())
 
     log("=" * 70)
     log("GATEWAY READY [OK]")
@@ -493,6 +508,7 @@ async def lifespan(app: FastAPI):
     yield
     health_task.cancel()
     warmup_task.cancel()
+    flux_prewarm_task.cancel()
     await http_client.aclose()
 
 
@@ -681,7 +697,7 @@ async def generate(request: Request):
                 try:
                     gen_result = await image_generator.generate_image_async(
                         prompt=clean_prompt or prompt,
-                        num_inference_steps=4,
+                        num_inference_steps=3,
                         guidance_scale=0.0,
                     )
                     elapsed = gen_result["latency_ms"]
@@ -751,6 +767,9 @@ async def generate(request: Request):
         body["options"]["temperature"] = 0.3
         body["options"]["top_p"] = 0.8
         body["options"]["repeat_penalty"] = 1.1
+        body["options"]["num_ctx"] = 2048
+        body["options"]["f16_kv"] = True
+        body["options"]["num_thread"] = 8
 
         # Check cache (non-streaming only)
         cached = cache.get(model, ollama_prompt)
@@ -1271,7 +1290,9 @@ async def api_generate_image(request: Request):
     neg_prompt = body.get("negative_prompt", "")
     width = int(body.get("width", 512))
     height = int(body.get("height", 512))
-    steps = int(body.get("steps", 4))
+    steps = int(body.get("steps", 3))
+    if steps > 4:
+        steps = 3
     guidance = float(body.get("guidance_scale", 0.0))
     seed = body.get("seed")
     if seed is not None:
