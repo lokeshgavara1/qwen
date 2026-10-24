@@ -55,8 +55,8 @@ except ImportError:
     FASTER_WHISPER_AVAILABLE = False
 
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
-WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda" if FASTER_WHISPER_AVAILABLE else "cpu")
-WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16" if WHISPER_DEVICE == "cuda" else "int8")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", "4"))
 whisper_model: Optional[Any] = None
 
@@ -910,20 +910,35 @@ def _transcribe_audio_file(file_path: str, language: Optional[str] = None) -> Di
     """
     Synchronous audio transcription worker function executed in background threadpool.
     Supports MP3, WAV, M4A, OGG, WEBM, FLAC, AAC formats.
+    Runs on CPU with int8 quantization to prevent cublas64_12.dll missing library errors.
     """
+    global whisper_model
     if whisper_model is None:
-        raise RuntimeError("Faster-Whisper model is not initialized or failed to load on startup.")
+        if not FASTER_WHISPER_AVAILABLE:
+            raise RuntimeError("Faster-Whisper model is not installed or failed to initialize.")
+        whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8", cpu_threads=WHISPER_CPU_THREADS)
 
-    # beam_size=5 provides high accuracy; vad_filter trims leading/trailing silent segments
-    segments, info = whisper_model.transcribe(
-        file_path,
-        language=language if (language and language.strip().lower() != "auto") else None,
-        beam_size=5,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
-    )
+    try:
+        segments, info = whisper_model.transcribe(
+            file_path,
+            language=language if (language and language.strip().lower() != "auto") else None,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+        )
+        segment_list = list(segments)
+    except Exception as e:
+        log(f"[STT WARNING] Transcribe error ({e}), reinitializing Whisper on CPU (int8)...")
+        whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8", cpu_threads=WHISPER_CPU_THREADS)
+        segments, info = whisper_model.transcribe(
+            file_path,
+            language=language if (language and language.strip().lower() != "auto") else None,
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+        )
+        segment_list = list(segments)
 
-    segment_list = list(segments)
     transcribed_text = " ".join(seg.text.strip() for seg in segment_list).strip()
 
     return {
@@ -1155,11 +1170,11 @@ async def _evaluate_test_submission(
         )
 
 
-@app.post("/api/tests/reading")
+@app.post("/api/tests/reading", tags=["Language Assessment"])
 async def evaluate_reading_test(request: Request):
     """
     Evaluates Reading test answers (passage comprehension, questions, vocabulary).
-    Accepts JSON: { "prompt": "...", "passage": "...", "answers": "...", "conversation_id": "..." }
+    Requires JSON: { "passage": "...", "answers": "..." }
     """
     try:
         body = await request.json()
@@ -1167,26 +1182,36 @@ async def evaluate_reading_test(request: Request):
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     conv_id = body.get("conversation_id")
-    passage = body.get("passage", "")
-    answers = body.get("answers", "")
-    prompt = body.get("prompt", "")
+    passage = str(body.get("passage", "")).strip()
+    answers = str(body.get("answers", "")).strip()
+    prompt = str(body.get("prompt", "")).strip()
 
-    eval_prompt = prompt
-    if passage or answers:
-        eval_prompt = f"READING PASSAGE:\n{passage}\n\nCANDIDATE ANSWERS / QUESTIONS:\n{answers}\n\nTASK: {prompt or 'Evaluate candidate answers for correctness, reading comprehension, and precision. Provide scores and corrective feedback.'}"
+    if not passage:
+        return JSONResponse({"error": "Missing required field: 'passage' cannot be empty."}, status_code=400)
+    if not answers:
+        return JSONResponse({"error": "Missing required field: 'answers' cannot be empty."}, status_code=400)
 
-    if not eval_prompt.strip():
-        return JSONResponse({"error": "Missing reading test prompt, passage, or answers."}, status_code=400)
+    eval_prompt = (
+        f"READING PASSAGE:\n{passage}\n\n"
+        f"CANDIDATE ANSWERS:\n{answers}\n\n"
+        f"TASK: Grade ONLY the candidate answers provided. Do NOT invent, hallucinate, or generate any other questions or answers."
+    )
 
-    sys_prompt = "You are an expert English Reading Examiner. Grade the candidate reading comprehension answers accurately, provide concise explanations, score the answers, and highlight mistakes."
+    sys_prompt = (
+        "You are an English Reading Examiner. Grade ONLY the exact candidate answers provided against the passage.\n"
+        "DO NOT invent, complete, or generate any additional questions (e.g. do NOT create Q2, Q3, etc.).\n"
+        "You MUST follow this EXACT output format:\n"
+        "Grade: <Correct / Partially Correct / Incorrect, or X/Y score>\n"
+        "Explanation: <concise factual feedback explaining why the answer is correct or incorrect>"
+    )
     return await _evaluate_test_submission("reading", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
 
 
-@app.post("/api/tests/writing")
+@app.post("/api/tests/writing", tags=["Language Assessment"])
 async def evaluate_writing_test(request: Request):
     """
-    Evaluates Writing test submissions (essays, reports, emails).
-    Accepts JSON: { "prompt": "...", "essay": "...", "task_prompt": "...", "conversation_id": "..." }
+    Evaluates Writing test submissions (essays, reports).
+    Requires JSON: { "task_prompt": "...", "essay": "..." }
     """
     try:
         body = await request.json()
@@ -1194,26 +1219,40 @@ async def evaluate_writing_test(request: Request):
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     conv_id = body.get("conversation_id")
-    essay = body.get("essay", "") or body.get("submission", "")
-    task_prompt = body.get("task_prompt", "")
-    prompt = body.get("prompt", "")
+    essay = str(body.get("essay", "") or body.get("submission", "")).strip()
+    task_prompt = str(body.get("task_prompt", "")).strip()
+    prompt = str(body.get("prompt", "")).strip()
 
-    eval_prompt = prompt
-    if essay or task_prompt:
-        eval_prompt = f"WRITING PROMPT / TOPIC:\n{task_prompt}\n\nCANDIDATE ESSAY:\n{essay}\n\nTASK: {prompt or 'Evaluate the essay based on Task Achievement, Coherence and Cohesion, Lexical Resource, and Grammatical Range and Accuracy. Provide band score and actionable feedback.'}"
+    if not task_prompt:
+        return JSONResponse({"error": "Missing required field: 'task_prompt' cannot be empty."}, status_code=400)
+    if not essay:
+        return JSONResponse({"error": "Missing required field: 'essay' cannot be empty."}, status_code=400)
 
-    if not eval_prompt.strip():
-        return JSONResponse({"error": "Missing writing essay or prompt."}, status_code=400)
+    eval_prompt = (
+        f"WRITING PROMPT / TOPIC:\n{task_prompt}\n\n"
+        f"CANDIDATE ESSAY:\n{essay}\n\n"
+        f"TASK: Evaluate this essay strictly according to official IELTS band descriptors."
+    )
 
-    sys_prompt = "You are an official IELTS/CEFR English Writing Examiner. Assess essays across Task Achievement, Coherence & Cohesion, Lexical Resource, and Grammar. Provide an overall band score and constructive feedback."
+    sys_prompt = (
+        "You are an official IELTS English Writing Examiner. Assess the candidate essay strictly.\n"
+        "Do NOT invent or write text for the essay.\n"
+        "You MUST follow this EXACT output format without deviating:\n"
+        "Overall Band: <X.X>\n"
+        "Task Achievement: <X.X>\n"
+        "Coherence and Cohesion: <X.X>\n"
+        "Lexical Resource: <X.X>\n"
+        "Grammatical Range and Accuracy: <X.X>\n"
+        "Feedback: <concise actionable feedback>"
+    )
     return await _evaluate_test_submission("writing", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
 
 
-@app.post("/api/tests/listening")
+@app.post("/api/tests/listening", tags=["Language Assessment"])
 async def evaluate_listening_test(request: Request):
     """
-    Evaluates Listening test answers against transcript/audio questions.
-    Accepts JSON: { "prompt": "...", "transcript": "...", "answers": "...", "conversation_id": "..." }
+    Evaluates Listening test answers against audio transcript.
+    Requires JSON: { "transcript": "...", "answers": "..." }
     """
     try:
         body = await request.json()
@@ -1221,26 +1260,36 @@ async def evaluate_listening_test(request: Request):
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     conv_id = body.get("conversation_id")
-    transcript = body.get("transcript", "")
-    answers = body.get("answers", "")
-    prompt = body.get("prompt", "")
+    transcript = str(body.get("transcript", "")).strip()
+    answers = str(body.get("answers", "")).strip()
+    prompt = str(body.get("prompt", "")).strip()
 
-    eval_prompt = prompt
-    if transcript or answers:
-        eval_prompt = f"AUDIO TRANSCRIPT:\n{transcript}\n\nCANDIDATE ANSWERS:\n{answers}\n\nTASK: {prompt or 'Evaluate the candidate listening answers against the audio transcript for factual accuracy, spelling, and completeness. Provide scores and correction notes.'}"
+    if not transcript:
+        return JSONResponse({"error": "Missing required field: 'transcript' cannot be empty."}, status_code=400)
+    if not answers:
+        return JSONResponse({"error": "Missing required field: 'answers' cannot be empty."}, status_code=400)
 
-    if not eval_prompt.strip():
-        return JSONResponse({"error": "Missing listening test prompt, transcript, or candidate answers."}, status_code=400)
+    eval_prompt = (
+        f"AUDIO TRANSCRIPT:\n{transcript}\n\n"
+        f"CANDIDATE ANSWERS:\n{answers}\n\n"
+        f"TASK: Compare candidate answers strictly against the audio transcript. Grade only the answers provided."
+    )
 
-    sys_prompt = "You are an expert English Listening Examiner. Compare the candidate's answers against the audio transcript, determine correctness, and provide exact score and feedback."
+    sys_prompt = (
+        "You are an English Listening Examiner. Compare candidate answers strictly against the audio transcript.\n"
+        "DO NOT invent or generate any additional questions or answers.\n"
+        "You MUST follow this EXACT output format:\n"
+        "Score: <X/Y>\n"
+        "Explanation: <concise feedback on factual correctness and details>"
+    )
     return await _evaluate_test_submission("listening", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
 
 
-@app.post("/api/tests/speaking")
+@app.post("/api/tests/speaking", tags=["Language Assessment"])
 async def evaluate_speaking_test(request: Request):
     """
     Evaluates candidate Speaking responses (transcribed speech).
-    Accepts JSON: { "prompt": "...", "transcript": "...", "topic": "...", "conversation_id": "..." }
+    Requires JSON: { "topic": "...", "transcript": "..." }
     """
     try:
         body = await request.json()
@@ -1248,18 +1297,32 @@ async def evaluate_speaking_test(request: Request):
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     conv_id = body.get("conversation_id")
-    transcript = body.get("transcript", "")
-    topic = body.get("topic", "")
-    prompt = body.get("prompt", "")
+    transcript = str(body.get("transcript", "")).strip()
+    topic = str(body.get("topic", "")).strip()
+    prompt = str(body.get("prompt", "")).strip()
 
-    eval_prompt = prompt
-    if transcript or topic:
-        eval_prompt = f"SPEAKING TOPIC / QUESTION:\n{topic}\n\nCANDIDATE SPOKEN TRANSCRIPT:\n{transcript}\n\nTASK: {prompt or 'Evaluate candidate spoken response for Fluency, Lexical Resource, Grammatical Accuracy, Relevance, and Structure. Provide an estimated speaking band score and detailed constructive feedback.'}"
+    if not topic:
+        return JSONResponse({"error": "Missing required field: 'topic' cannot be empty."}, status_code=400)
+    if not transcript:
+        return JSONResponse({"error": "Missing required field: 'transcript' cannot be empty."}, status_code=400)
 
-    if not eval_prompt.strip():
-        return JSONResponse({"error": "Missing speaking transcript or prompt."}, status_code=400)
+    eval_prompt = (
+        f"SPEAKING TOPIC / QUESTION:\n{topic}\n\n"
+        f"CANDIDATE SPOKEN TRANSCRIPT:\n{transcript}\n\n"
+        f"TASK: Evaluate this candidate spoken response strictly according to official IELTS speaking descriptors."
+    )
 
-    sys_prompt = "You are an official IELTS/CEFR English Speaking Examiner. Evaluate transcribed candidate speech for fluency, coherence, vocabulary breadth, grammar correctness, and topical relevance."
+    sys_prompt = (
+        "You are an official IELTS English Speaking Examiner. Assess the candidate spoken transcript.\n"
+        "Do NOT invent or write text for the candidate.\n"
+        "You MUST follow this EXACT output format without deviating:\n"
+        "Estimated Band: <X.X>\n"
+        "Fluency and Coherence: <X.X>\n"
+        "Lexical Resource: <X.X>\n"
+        "Grammatical Accuracy: <X.X>\n"
+        "Topical Relevance: <X.X>\n"
+        "Feedback: <concise actionable feedback>"
+    )
     return await _evaluate_test_submission("speaking", eval_prompt, conversation_id=conv_id, system_prompt=sys_prompt)
 
 
