@@ -512,7 +512,14 @@ async def lifespan(app: FastAPI):
     await http_client.aclose()
 
 
-app = FastAPI(title="AI Gateway", version="3.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="CUTM AI Gateway API",
+    description="Enterprise AI Gateway & Load Balancer providing Ollama native endpoints (/api/generate), OpenAI-compatible endpoints (/v1/chat/completions, /v1/models, /v1/images/generations), FLUX.1 image generation, and Faster-Whisper Speech-to-Text.",
+    version="3.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # Standard CORS Middleware (allows all origins, headers, methods)
 app.add_middleware(
@@ -1380,6 +1387,163 @@ async def openai_images_generations(request: Request):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/v1/models", tags=["OpenAI Compatible"])
+async def openai_list_models():
+    """
+    OpenAI-compatible models list endpoint.
+    Used by OpenAI SDK (`client.models.list()`) to inspect available models.
+    """
+    model_ids = ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "flux-schnell"]
+    data = [
+        {
+            "id": m,
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "cutm-ai",
+            "permission": [],
+            "root": m,
+            "parent": None
+        }
+        for m in model_ids
+    ]
+    return JSONResponse({"object": "list", "data": data})
+
+
+@app.post("/v1/chat/completions", tags=["OpenAI Compatible"])
+async def openai_chat_completions(request: Request):
+    """
+    OpenAI-compatible chat completions endpoint.
+    Compatible with the official OpenAI Python/Node/cURL clients.
+    Supports both non-streaming (`stream=False`) and SSE streaming (`stream=True`).
+    """
+    api_key = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        potential_key = auth_header.replace("Bearer ", "").strip()
+        info = find_api_key(potential_key)
+        if info and info.get("active", True):
+            expires = info.get("expires_at")
+            if not expires or datetime.fromisoformat(expires) > datetime.now():
+                api_key = potential_key
+                info["usage_count"] = info.get("usage_count", 0) + 1
+                info["last_used"] = datetime.now().isoformat()
+                asyncio.create_task(save_api_keys_async(API_KEYS))
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}},
+            status_code=400
+        )
+
+    requested_model = body.get("model", "mistral:7b")
+    if requested_model in ("gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4-turbo", "default", "auto", ""):
+        model = "mistral:7b"
+    elif requested_model in ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b"]:
+        model = requested_model
+    else:
+        model = "mistral:7b"
+    body["model"] = model
+
+    stream = bool(body.get("stream", False))
+
+    worker = SmartScheduler.select_worker(model)
+    if not worker:
+        return JSONResponse(
+            {"error": {"message": f"No online server currently available for model '{model}'", "type": "server_error"}},
+            status_code=503
+        )
+
+    role = worker["role"]
+    url = worker["url"]
+    SmartScheduler.start_request(role)
+    req_start = time.perf_counter()
+
+    if stream:
+        async def openai_sse_stream():
+            try:
+                async with http_client.stream(
+                    "POST", f"{url}/v1/chat/completions", json=body, timeout=120.0
+                ) as response:
+                    if response.status_code == 200:
+                        async for chunk in response.aiter_bytes():
+                            yield chunk
+                    else:
+                        err_content = await response.aread()
+                        log(f"Worker {role} /v1/chat/completions returned {response.status_code}: {err_content.decode('utf-8', errors='ignore')}")
+            except Exception as e:
+                SERVER_STATE[role]["errors"] += 1
+                STATS["failed_requests"] += 1
+                log(f"Stream error on {role} (/v1/chat/completions): {e}")
+            finally:
+                elapsed = round((time.perf_counter() - req_start) * 1000, 1)
+                SmartScheduler.finish_request(role, elapsed)
+
+        return StreamingResponse(
+            openai_sse_stream(),
+            media_type="text/event-stream",
+            headers={"X-Server": role, "X-Model": model}
+        )
+
+    try:
+        response = await http_client.post(f"{url}/v1/chat/completions", json=body, timeout=120.0)
+        elapsed = round((time.perf_counter() - req_start) * 1000, 1)
+        SmartScheduler.finish_request(role, elapsed)
+
+        if response.status_code == 200:
+            data = response.json()
+            return JSONResponse(
+                content=data,
+                headers={"X-Server": role, "X-Model": model}
+            )
+
+        chat_body = {
+            "model": model,
+            "messages": body.get("messages", []),
+            "stream": False,
+            "options": {
+                "temperature": body.get("temperature", 0.3),
+                "num_predict": body.get("max_tokens", 400),
+                "top_p": body.get("top_p", 0.8),
+            }
+        }
+        fallback_resp = await http_client.post(f"{url}/api/chat", json=chat_body, timeout=120.0)
+        fb_data = fallback_resp.json()
+        translated = {
+            "id": f"chatcmpl-{secrets.token_hex(8)}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": fb_data.get("message", {"role": "assistant", "content": ""}),
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": fb_data.get("prompt_eval_count", 0),
+                "completion_tokens": fb_data.get("eval_count", 0),
+                "total_tokens": fb_data.get("prompt_eval_count", 0) + fb_data.get("eval_count", 0)
+            }
+        }
+        return JSONResponse(
+            content=translated,
+            headers={"X-Server": role, "X-Model": model}
+        )
+
+    except Exception as e:
+        SERVER_STATE[role]["errors"] += 1
+        STATS["failed_requests"] += 1
+        SmartScheduler.finish_request(role)
+        log(f"OpenAI chat error on {role}: {e}")
+        return JSONResponse(
+            {"error": {"message": str(e), "type": "server_error"}},
+            status_code=500
+        )
 
 
 ###############################################################################
