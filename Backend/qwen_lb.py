@@ -70,6 +70,11 @@ SERVERS = {
         "models": ["mistral:7b", "qwen2.5vl:7b"],
         "priority": 1,
     },
+    "gpu_workstation": {
+        "url": "http://172.16.8.170:11434",
+        "models": ["mistral:7b", "qwen2.5vl:7b"],
+        "priority": 1,
+    },
     "server1": {
         "url": "http://172.16.8.253:11434",
         "models": ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b"],
