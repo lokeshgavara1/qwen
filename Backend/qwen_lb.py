@@ -606,8 +606,12 @@ async def root():
     return HTMLResponse("<h1>AI Gateway Ready</h1><p><a href='/chat'>Open Chat Interface</a></p>")
 
 @app.get("/dashboard")
+@app.get("/dashboard/")
+@app.get("/dashboard.html")
 async def dashboard_page():
     dash_file = frontend_dir / "dashboard.html"
+    if not dash_file.exists():
+        dash_file = frontend_dir / "dashboard" / "index.html"
     if dash_file.exists():
         return FileResponse(str(dash_file))
     return HTMLResponse("<h1>Dashboard file not found</h1>", status_code=404)
