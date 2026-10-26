@@ -65,6 +65,9 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", "4"))
 whisper_model: Optional[Any] = None
 
+# Remote Image Server: Points to the dedicated RTX 4060 Ti GPU Workstation
+REMOTE_IMAGE_SERVER = os.getenv("REMOTE_IMAGE_SERVER", "http://172.16.8.170:8000")
+
 ###############################################################################
 # CONFIGURATION & SERVERS
 ###############################################################################
@@ -562,6 +565,40 @@ generated_images_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/generated_images", StaticFiles(directory=str(generated_images_dir)), name="generated_images")
 log("Mounted /generated_images static directory [OK]")
 
+async def forward_image_generation(body: dict) -> Optional[dict]:
+    """
+    If local FLUX model is not installed (e.g. running on the central gateway),
+    forward image generation to the dedicated RTX 4060 Ti GPU Workstation (172.16.8.170:8000).
+    """
+    if not REMOTE_IMAGE_SERVER:
+        return None
+    try:
+        remote_url = f"{REMOTE_IMAGE_SERVER.rstrip('/')}/api/image/generate"
+        log(f"[REMOTE_IMAGE] Offloading image generation to GPU workstation: {remote_url}")
+        resp = await http_client.post(remote_url, json=body, timeout=120.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            # If image_base64 is present, cache file locally in generated_images_dir
+            # so the central server can immediately serve /generated_images/<filename> directly!
+            if "image_base64" in data and "image_url" in data:
+                try:
+                    rel_url = data["image_url"]
+                    filename = Path(rel_url).name
+                    local_target = generated_images_dir / filename
+                    b64_str = data["image_base64"]
+                    if "," in b64_str:
+                        b64_str = b64_str.split(",", 1)[1]
+                    local_target.write_bytes(base64.b64decode(b64_str))
+                    log(f"[REMOTE_IMAGE] Cached remote image locally: {filename}")
+                except Exception as e:
+                    log(f"[REMOTE_IMAGE] Warning: could not cache image locally: {e}")
+            return data
+        else:
+            log(f"[REMOTE_IMAGE] GPU workstation returned HTTP {resp.status_code}: {resp.text[:100]}")
+    except Exception as e:
+        log(f"[REMOTE_IMAGE] Failed to connect to GPU workstation at {REMOTE_IMAGE_SERVER}: {e}")
+    return None
+
 @app.get("/")
 async def root():
     if (frontend_dir / "index.html").exists():
@@ -880,85 +917,96 @@ async def generate(request: Request):
         # ── Fast-path for Image Generation Intent ────────────────────────────
         is_explicit_image_req = requested_model in ["flux", "flux-schnell", "flux.1", "stable-diffusion", "sd15", "diffusion", "image-gen"]
         if intent == IMAGE_GEN or is_explicit_image_req:
-            if not image_generator.is_available():
-                if is_explicit_image_req:
-                    return JSONResponse(
-                        {"error": "Image generation engine (FLUX.1 [schnell] 4-bit) is not installed on this server.", "conversation_id": conversation_id},
-                        status_code=503
-                    )
-                else:
-                    log(f"[IMAGE_GEN] Image generation requested but FLUX model weights are not loaded. Routing to LLM...")
-                    intent = CHAT
-            else:
-                clean_prompt = prompt
-                for prefix in FastIntentDetector.IMAGE_PREFIXES:
-                    if clean_prompt.lower().startswith(prefix):
-                        clean_prompt = clean_prompt[len(prefix):].strip()
-                        break
-                for phrase in FastIntentDetector.IMAGE_PHRASES:
-                    if phrase in clean_prompt.lower():
-                        idx = clean_prompt.lower().find(phrase)
-                        after = clean_prompt[idx + len(phrase):].strip()
-                        if after.lower().startswith("of "):
-                            after = after[3:].strip()
-                        if after:
-                            clean_prompt = after
-                        break
+            clean_prompt = prompt
+            for prefix in FastIntentDetector.IMAGE_PREFIXES:
+                if clean_prompt.lower().startswith(prefix):
+                    clean_prompt = clean_prompt[len(prefix):].strip()
+                    break
+            for phrase in FastIntentDetector.IMAGE_PHRASES:
+                if phrase in clean_prompt.lower():
+                    idx = clean_prompt.lower().find(phrase)
+                    after = clean_prompt[idx + len(phrase):].strip()
+                    if after.lower().startswith("of "):
+                        after = after[3:].strip()
+                    if after:
+                        clean_prompt = after
+                    break
 
+            gen_result = None
+            if image_generator.is_available():
                 try:
                     gen_result = await image_generator.generate_image_async(
                         prompt=clean_prompt or prompt,
                         num_inference_steps=3,
                         guidance_scale=0.0,
                     )
-                    elapsed = gen_result["latency_ms"]
-                    img_url = gen_result["image_url"]
-                    formatted_md = (
-                        f"![Generated Image]({img_url})\n\n"
-                        f"**Prompt:** *{gen_result['prompt']}*\n"
-                        f"**Seed:** `{gen_result['seed']}` | **Steps:** `{gen_result['steps']}` | **Latency:** `{elapsed}ms`"
-                    )
-
-                    conversation_memory.set_last_response(conversation_id, f"[GENERATED IMAGE]: {gen_result['prompt']}", prompt)
-                    log(f"[IMAGE_GEN] Generated '{gen_result['prompt'][:35]}...' in {elapsed}ms (seed={gen_result['seed']})")
-
-                    if stream:
-                        async def img_stream():
-                            chunk_dict = {
-                                "model": "FLUX.1-schnell",
-                                "response": formatted_md,
-                                "done": True,
-                                "eval_count": 50,
-                                "image_url": img_url,
-                                "seed": gen_result["seed"],
-                                "latency_ms": elapsed,
-                                "conversation_id": conversation_id,
-                            }
-                            yield (json.dumps(chunk_dict) + "\n").encode("utf-8")
-
-                        return StreamingResponse(
-                            img_stream(),
-                            media_type="application/x-ndjson",
-                            headers={"X-Server": "local-diffusion", "X-Model": "FLUX.1-schnell", "X-Conversation-ID": conversation_id}
-                        )
-                    else:
-                        return JSONResponse(
-                            content={
-                                "model": "FLUX.1-schnell",
-                                "response": formatted_md,
-                                "image_url": img_url,
-                                "seed": gen_result["seed"],
-                                "latency_ms": elapsed,
-                                "_intent": IMAGE_GEN,
-                                "_server": "local-diffusion",
-                                "conversation_id": conversation_id,
-                            },
-                            headers={"X-Server": "local-diffusion", "X-Model": "stable-diffusion-v1.5", "X-Conversation-ID": conversation_id}
-                        )
                 except Exception as e:
-                    log(f"[IMAGE_GEN ERROR] {e}")
-                    STATS["failed_requests"] += 1
-                    return JSONResponse({"error": f"Image generation failed: {str(e)}", "conversation_id": conversation_id}, status_code=500)
+                    log(f"[IMAGE_GEN ERROR] Local FLUX generation error: {e}")
+            else:
+                # Forward to dedicated GPU Workstation
+                gen_result = await forward_image_generation({
+                    "prompt": clean_prompt or prompt,
+                    "steps": 3,
+                    "guidance_scale": 0.0,
+                    "conversation_id": conversation_id,
+                })
+
+            if not gen_result or not gen_result.get("success"):
+                if is_explicit_image_req:
+                    return JSONResponse(
+                        {"error": "Image generation engine (FLUX.1 [schnell] 4-bit) is not reachable on this server or GPU workstation (172.16.8.170:8000).", "conversation_id": conversation_id},
+                        status_code=503
+                    )
+                else:
+                    log(f"[IMAGE_GEN] Image generation requested but GPU workstation is not reachable. Routing to LLM...")
+                    intent = CHAT
+            else:
+                elapsed = gen_result.get("latency_ms", 0)
+                img_url = gen_result["image_url"]
+                formatted_md = (
+                    f"![Generated Image]({img_url})\n\n"
+                    f"**Prompt:** *{gen_result.get('prompt', prompt)}*\n"
+                    f"**Seed:** `{gen_result.get('seed', '')}` | **Latency:** `{elapsed}ms`"
+                )
+
+                conversation_memory.set_last_response(conversation_id, f"[GENERATED IMAGE]: {gen_result.get('prompt', prompt)}", prompt)
+                log(f"[IMAGE_GEN] Generated '{gen_result.get('prompt', prompt)[:35]}...' in {elapsed}ms (seed={gen_result.get('seed')})")
+
+                server_label = "local-diffusion" if image_generator.is_available() else "gpu_workstation-diffusion"
+
+                if stream:
+                    async def img_stream():
+                        chunk_dict = {
+                            "model": "FLUX.1-schnell",
+                            "response": formatted_md,
+                            "done": True,
+                            "eval_count": 50,
+                            "image_url": img_url,
+                            "seed": gen_result.get("seed"),
+                            "latency_ms": elapsed,
+                            "conversation_id": conversation_id,
+                        }
+                        yield (json.dumps(chunk_dict) + "\n").encode("utf-8")
+
+                    return StreamingResponse(
+                        img_stream(),
+                        media_type="application/x-ndjson",
+                        headers={"X-Server": server_label, "X-Model": "FLUX.1-schnell", "X-Conversation-ID": conversation_id}
+                    )
+                else:
+                    return JSONResponse(
+                        content={
+                            "model": "FLUX.1-schnell",
+                            "response": formatted_md,
+                            "image_url": img_url,
+                            "seed": gen_result.get("seed"),
+                            "latency_ms": elapsed,
+                            "_intent": IMAGE_GEN,
+                            "_server": server_label,
+                            "conversation_id": conversation_id,
+                        },
+                        headers={"X-Server": server_label, "X-Model": "FLUX.1-schnell", "X-Conversation-ID": conversation_id}
+                    )
 
         # ── Conversation History & Context Linking ──────────────────────────
         prev_response = conversation_memory.get_last_response(conversation_id)
@@ -1576,8 +1624,12 @@ async def api_generate_image(request: Request):
             seed = None
 
     if not image_generator.is_available():
+        # Try offloading to GPU workstation
+        remote_res = await forward_image_generation(body)
+        if remote_res:
+            return JSONResponse(remote_res)
         return JSONResponse(
-            {"error": "FLUX.1 [schnell] 4-bit model is not available or cache is missing."},
+            {"error": "FLUX.1 [schnell] 4-bit model is not available locally or on GPU workstation (172.16.8.170:8000)."},
             status_code=503
         )
 
@@ -1616,12 +1668,6 @@ async def api_generate_image(request: Request):
 @app.post("/v1/images/generations")
 async def openai_images_generations(request: Request):
     """OpenAI-compatible image generation endpoint."""
-    if not image_generator.is_available():
-        return JSONResponse(
-            {"error": "FLUX.1 [schnell] 4-bit model is not available or cache is missing."},
-            status_code=503
-        )
-
     try:
         body = await request.json()
     except Exception:
@@ -1637,6 +1683,29 @@ async def openai_images_generations(request: Request):
         w, h = int(w_str), int(h_str)
     except Exception:
         w, h = 512, 512
+
+    if not image_generator.is_available():
+        # Forward to GPU workstation
+        try:
+            remote_url = f"{REMOTE_IMAGE_SERVER.rstrip('/')}/v1/images/generations"
+            log(f"[REMOTE_IMAGE] Offloading OpenAI image generation to {remote_url}")
+            resp = await http_client.post(remote_url, json=body, timeout=120.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("data", []):
+                    if "b64_json" in item and "url" in item:
+                        try:
+                            fname = Path(item["url"]).name
+                            (generated_images_dir / fname).write_bytes(base64.b64decode(item["b64_json"]))
+                        except Exception:
+                            pass
+                return JSONResponse(data)
+        except Exception as e:
+            log(f"[REMOTE_IMAGE] OpenAI images forward error: {e}")
+        return JSONResponse(
+            {"error": "FLUX.1 [schnell] 4-bit model is not available locally or on GPU workstation (172.16.8.170:8000)."},
+            status_code=503
+        )
 
     try:
         base_url = str(request.base_url).rstrip("/")
