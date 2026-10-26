@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CUTM AI Gateway — API Usage & Governance Dashboard</title>
+  <meta name="description" content="Centralized API telemetry, per-key quota tracking, cluster health monitoring, and live request audit log for CUTM AI Gateway.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/dashboard.css">
+</head>
+<body>
+  <div class="dashboard-wrapper">
+    
+    <!-- Top Navigation Header -->
+    <header class="dashboard-header">
+      <div class="brand-section">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+          </svg>
+        </div>
+        <div class="brand-info">
+          <h1>CUTM AI Gateway Telemetry</h1>
+          <div class="brand-sub">
+            <span>Cluster Production v3.0</span>
+            <span class="badge-live">
+              <span class="pulse-dot"></span> 11/11 Nodes Live
+            </span>
+            <span style="color: var(--text-muted);">&bull;</span>
+            <span style="color: var(--text-secondary);" id="currentTime">Live Sync</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <select class="refresh-select" id="refreshSelect" title="Select Auto Refresh Interval">
+          <option value="3000">Auto Refresh: 3s</option>
+          <option value="5000" selected>Auto Refresh: 5s</option>
+          <option value="10000">Auto Refresh: 10s</option>
+          <option value="0">Auto Refresh: Paused</option>
+        </select>
+        <button class="btn" id="btnManualRefresh" title="Refresh Now">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+          Refresh
+        </button>
+        <button class="btn btn-primary" id="btnNewKey">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          Create API Key
+        </button>
+        <a href="/chat" class="btn" target="_blank">Chat UI &rarr;</a>
+        <a href="/docs" class="btn" target="_blank">API Docs</a>
+      </div>
+    </header>
+
+    <!-- Executive KPI Row -->
+    <section class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-top">
+          <span class="kpi-label">Total API Calls</span>
+          <div class="kpi-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"></path></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiTotalReqs">0</div>
+        <div class="kpi-bottom">
+          <span class="trend-pill trend-up" id="kpiTrendPill">+0% today</span>
+          <span>across all endpoints</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-top">
+          <span class="kpi-label">Active API Keys</span>
+          <div class="kpi-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiActiveKeys">0</div>
+        <div class="kpi-bottom">
+          <span style="color: var(--accent-green); font-weight: 600;">100% Authorized</span>
+          <span>&bull; Role-enforced</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-top">
+          <span class="kpi-label">Average Latency</span>
+          <div class="kpi-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-violet)" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiAvgLatency">0 ms</div>
+        <div class="kpi-bottom">
+          <span>P50: ~240ms</span>
+          <span>&bull;</span>
+          <span>P95: ~410ms</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-top">
+          <span class="kpi-label">Global Error Rate</span>
+          <div class="kpi-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiErrorRate">0.0%</div>
+        <div class="kpi-bottom">
+          <span style="color: var(--accent-green); font-weight: 600;">99.98% Gateway SLA</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-top">
+          <span class="kpi-label">Tokens Processed</span>
+          <div class="kpi-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-purple)" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+          </div>
+        </div>
+        <div class="kpi-value" id="kpiTotalTokens">0</div>
+        <div class="kpi-bottom">
+          <span id="kpiTokensPerSec" style="color: var(--accent-cyan); font-weight: 600;">0 tok/s</span>
+          <span>throughput</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Telemetry & Model Distribution Row -->
+    <section class="analytics-row">
+      <!-- Traffic Volume & Latency Dual Chart -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+              Traffic Volume & Cluster Latency
+            </div>
+            <div class="card-subtitle">Real-time hourly request volume (bars) overlaid with gateway latency response curve (violet line)</div>
+          </div>
+        </div>
+        <div class="chart-container">
+          <canvas id="trafficCanvas" class="chart-canvas"></canvas>
+        </div>
+      </div>
+
+      <!-- Model Distribution Breakdown -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-violet)" stroke-width="2"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>
+              Model Distribution
+            </div>
+            <div class="card-subtitle">Cluster inference share across models</div>
+          </div>
+        </div>
+        <div class="model-list" id="modelListContainer">
+          <!-- Populated dynamically by dashboard.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- "Who is Using How Much" (Key & User Analytics Table) -->
+    <section class="section-wrapper">
+      <div class="table-toolbar">
+        <div>
+          <h2 style="font-size: 1.25rem; font-weight: 700; color: #FFF; letter-spacing: -0.02em;">Who is Using How Much (Key Telemetry)</h2>
+          <p style="font-size: 0.8rem; color: var(--text-muted);">Real-time usage counters, token accounting, and quota enforcement per client/key</p>
+        </div>
+        <div class="search-box">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="text" id="keySearchInput" placeholder="Filter by client, key, or role...">
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="custom-table">
+          <thead>
+            <tr>
+              <th>Client / Project</th>
+              <th>API Key Token</th>
+              <th>Total Requests & Tokens</th>
+              <th>Quota Consumption (Today)</th>
+              <th>Last Seen</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="keysTableBody">
+            <!-- Populated dynamically by dashboard.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Live Cluster Worker Nodes Grid -->
+    <section class="section-wrapper">
+      <div class="card-header" style="margin-bottom: 12px;">
+        <div>
+          <h2 style="font-size: 1.25rem; font-weight: 700; color: #FFF; letter-spacing: -0.02em;">Distributed GPU & Worker Nodes</h2>
+          <p style="font-size: 0.8rem; color: var(--text-muted);">Real-time health, active model allocations, and queue depths across campus cluster</p>
+        </div>
+      </div>
+      <div class="workers-grid" id="workersGridContainer">
+        <!-- Populated dynamically by dashboard.js -->
+      </div>
+    </section>
+
+    <!-- Live Request Audit Trail -->
+    <section class="section-wrapper">
+      <div class="table-toolbar">
+        <div>
+          <h2 style="font-size: 1.25rem; font-weight: 700; color: #FFF; letter-spacing: -0.02em;">Live Request Stream (Audit Trail)</h2>
+          <p style="font-size: 0.8rem; color: var(--text-muted);">Real-time stream of all incoming requests with latency and client identification</p>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <div style="display: flex; gap: 4px; background: rgba(255, 255, 255, 0.04); padding: 3px; border-radius: 8px;">
+            <button class="btn log-filter-btn active" data-filter="all" style="padding: 4px 10px; font-size: 0.74rem;">All</button>
+            <button class="btn log-filter-btn" data-filter="2xx" style="padding: 4px 10px; font-size: 0.74rem;">2xx OK</button>
+            <button class="btn log-filter-btn" data-filter="4xx" style="padding: 4px 10px; font-size: 0.74rem;">4xx Errors</button>
+            <button class="btn log-filter-btn" data-filter="5xx" style="padding: 4px 10px; font-size: 0.74rem;">5xx Errors</button>
+          </div>
+          <div class="search-box" style="min-width: 220px;">
+            <input type="text" id="logSearchInput" placeholder="Search IP, endpoint, model...">
+          </div>
+          <button class="btn" id="btnExportCsv" title="Export audit trail as CSV for compliance">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            Export CSV
+          </button>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="custom-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Status</th>
+              <th>Key / Client</th>
+              <th>Endpoint</th>
+              <th>Model</th>
+              <th>Client IP</th>
+              <th>Latency</th>
+            </tr>
+          </thead>
+          <tbody id="logsTableBody">
+            <!-- Populated dynamically by dashboard.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Create API Key Modal -->
+  <div class="modal-overlay" id="modalCreateKey">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">Generate New API Key</div>
+        <button class="btn" id="closeNewKeyModal" style="padding: 4px 8px; font-size: 0.9rem;">&times;</button>
+      </div>
+      <form id="formCreateKey">
+        <div class="form-group">
+          <label class="form-label">Client / Application Name</label>
+          <input type="text" class="form-input" id="newKeyName" placeholder="e.g. Campus Mobile App" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Role</label>
+          <select class="form-input" id="newKeyRole">
+            <option value="user" selected>User (Standard Access)</option>
+            <option value="admin">Administrator (Full Access)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Daily Request Quota</label>
+          <input type="number" class="form-input" id="newKeyQuota" value="10000" min="100" max="1000000">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Key Expiration</label>
+          <select class="form-input" id="newKeyExpiry">
+            <option value="30">30 Days</option>
+            <option value="90">90 Days</option>
+            <option value="365" selected>1 Year</option>
+            <option value="0">Never (Persistent)</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="cancelNewKeyBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Generate Key</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Edit Quota Modal -->
+  <div class="modal-overlay" id="modalEditQuota">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">Update Client Quota</div>
+        <button class="btn" id="closeQuotaModal" style="padding: 4px 8px; font-size: 0.9rem;">&times;</button>
+      </div>
+      <form id="formEditQuota">
+        <div class="form-group">
+          <label class="form-label">Daily Request Limit</label>
+          <input type="number" class="form-input" id="editQuotaInput" value="10000" min="100" max="1000000" required>
+          <span style="font-size: 0.74rem; color: var(--text-muted); margin-top: 4px; display: block;">Clients exceeding this daily limit will receive HTTP 429 Too Many Requests.</span>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="cancelQuotaBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>

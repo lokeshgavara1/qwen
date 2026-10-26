@@ -38,6 +38,11 @@ import httpx
 
 import image_generator
 
+try:
+    from metrics_manager import metrics_manager
+except ImportError:
+    from Backend.metrics_manager import metrics_manager
+
 # ── Faster-Whisper STT Integration Support ─────────────────────────────────
 try:
     import av
@@ -563,6 +568,128 @@ async def root():
         return FileResponse(str(frontend_dir / "index.html"))
     return HTMLResponse("<h1>AI Gateway Ready</h1><p><a href='/chat'>Open Chat Interface</a></p>")
 
+@app.get("/dashboard")
+async def dashboard_page():
+    dash_file = frontend_dir / "dashboard.html"
+    if dash_file.exists():
+        return FileResponse(str(dash_file))
+    return HTMLResponse("<h1>Dashboard file not found</h1>", status_code=404)
+
+@app.get("/api/dashboard")
+async def api_dashboard_redirect():
+    return RedirectResponse(url="/dashboard")
+
+@app.get("/api/dashboard/stats")
+async def api_dashboard_stats():
+    return {
+        "kpis": metrics_manager.get_kpi_stats(),
+        "traffic": metrics_manager.get_traffic_history(hours=24),
+        "models": metrics_manager.get_model_distribution(),
+        "endpoints": metrics_manager.get_endpoint_distribution()
+    }
+
+@app.get("/api/dashboard/keys")
+async def api_dashboard_keys():
+    return {
+        "keys": metrics_manager.get_key_analytics(API_KEYS)
+    }
+
+@app.post("/api/dashboard/keys")
+async def api_dashboard_create_key(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    
+    name = str(body.get("name", "New Application")).strip()
+    role = str(body.get("role", "user")).strip()
+    daily_limit = int(body.get("daily_limit", 10000))
+    expiry_days = int(body.get("expiry_days", 365))
+
+    new_token = f"sk_{secrets.token_urlsafe(32)}"
+    now_dt = datetime.now()
+    expires_at = (now_dt + timedelta(days=expiry_days)).isoformat() if expiry_days > 0 else None
+
+    API_KEYS[new_token] = {
+        "name": name,
+        "role": role,
+        "active": True,
+        "created_at": now_dt.isoformat(),
+        "expires_at": expires_at,
+        "usage_count": 0,
+        "last_used": None
+    }
+    metrics_manager.set_key_quota(new_token, daily_limit, daily_limit * 25)
+    await save_api_keys_async(API_KEYS)
+    return {"status": "ok", "key": new_token, "name": name, "role": role, "daily_limit": daily_limit}
+
+@app.patch("/api/dashboard/keys/{key_id}")
+async def api_dashboard_update_key(key_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    
+    target_key = None
+    for k in API_KEYS.keys():
+        if k == key_id or secrets.compare_digest(k, key_id):
+            target_key = k
+            break
+            
+    if not target_key:
+        return JSONResponse({"error": "API key not found"}, status_code=404)
+        
+    if "active" in body:
+        API_KEYS[target_key]["active"] = bool(body["active"])
+    if "name" in body:
+        API_KEYS[target_key]["name"] = str(body["name"])
+    if "daily_limit" in body:
+        limit = int(body["daily_limit"])
+        metrics_manager.set_key_quota(target_key, limit, limit * 25)
+
+    await save_api_keys_async(API_KEYS)
+    return {"status": "ok", "key_id": target_key}
+
+@app.delete("/api/dashboard/keys/{key_id}")
+async def api_dashboard_delete_key(key_id: str):
+    target_key = None
+    for k in API_KEYS.keys():
+        if k == key_id or secrets.compare_digest(k, key_id):
+            target_key = k
+            break
+            
+    if not target_key:
+        return JSONResponse({"error": "API key not found"}, status_code=404)
+        
+    del API_KEYS[target_key]
+    await save_api_keys_async(API_KEYS)
+    return {"status": "ok", "deleted": key_id}
+
+@app.get("/api/dashboard/workers")
+async def api_dashboard_workers():
+    workers = []
+    for role, s in SERVER_STATE.items():
+        workers.append({
+            "role": role,
+            "url": s["url"],
+            "online": s["online"],
+            "queue": s["queue"],
+            "latency_ms": round(s["latency"], 1),
+            "requests": s["requests"],
+            "errors": s["errors"],
+            "models": s["models"]
+        })
+    return {"workers": workers}
+
+@app.get("/api/dashboard/logs")
+async def api_dashboard_logs(request: Request):
+    limit = int(request.query_params.get("limit", 80))
+    search = request.query_params.get("search")
+    status_filter = request.query_params.get("status")
+    key_filter = request.query_params.get("key")
+    logs = metrics_manager.get_recent_logs(limit=limit, search=search, status_filter=status_filter, key_filter=key_filter)
+    return {"logs": logs}
+
 ###############################################################################
 # CLIENT IP HELPER
 ###############################################################################
@@ -575,13 +702,85 @@ def get_client_ip(request: Request) -> str:
     Otherwise uses the direct connection IP to prevent spoofing.
     """
     peer = request.client.host if request.client else "unknown"
-    # Only trust the proxy header when the direct connection is from loopback
-    # (i.e. an NGINX/proxy running on the same host)
     if peer in ("127.0.0.1", "::1", "localhost"):
         forwarded_for = request.headers.get("X-Forwarded-For", "")
         if forwarded_for:
             return forwarded_for.split(",")[0].strip()
     return peer
+
+
+@app.middleware("http")
+async def telemetry_middleware(request: Request, call_next):
+    start_time = time.time()
+    path = request.url.path
+
+    # Extract API key if provided
+    api_key = None
+    api_key_name = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        potential_key = auth_header.replace("Bearer ", "").strip()
+        info = find_api_key(potential_key)
+        if info:
+            if not info.get("active", True):
+                return JSONResponse({"error": "API key revoked or inactive"}, status_code=403)
+            expires = info.get("expires_at")
+            if expires and datetime.fromisoformat(expires) <= datetime.now():
+                return JSONResponse({"error": "API key has expired"}, status_code=403)
+            api_key = potential_key
+            api_key_name = info.get("name", potential_key[:8])
+    elif "X-API-Key" in request.headers:
+        potential_key = request.headers.get("X-API-Key", "").strip()
+        info = find_api_key(potential_key)
+        if info:
+            if not info.get("active", True):
+                return JSONResponse({"error": "API key revoked or inactive"}, status_code=403)
+            expires = info.get("expires_at")
+            if expires and datetime.fromisoformat(expires) <= datetime.now():
+                return JSONResponse({"error": "API key has expired"}, status_code=403)
+            api_key = potential_key
+            api_key_name = info.get("name", potential_key[:8])
+
+    # For endpoints that don't already increment key usage, track here
+    if api_key and not path.startswith(("/api/generate", "/v1/chat/completions")):
+        key_info = find_api_key(api_key)
+        if key_info:
+            key_info["usage_count"] = key_info.get("usage_count", 0) + 1
+            key_info["last_used"] = datetime.now().isoformat()
+            asyncio.create_task(save_api_keys_async(API_KEYS))
+
+    response = await call_next(request)
+    latency_ms = (time.time() - start_time) * 1000.0
+
+    # Asynchronously log telemetry for all API routes (skip static assets & dashboard polling)
+    if path.startswith(("/api/", "/v1/")) and not path.startswith("/api/dashboard"):
+        client_ip = get_client_ip(request)
+        model = response.headers.get("X-Model")
+        if not model:
+            if "image" in path:
+                model = "FLUX.1-schnell"
+            elif "transcribe" in path:
+                model = "whisper-large-v3"
+            elif "reading" in path or "writing" in path or "speaking" in path or "listening" in path:
+                model = "mistral:7b"
+            else:
+                model = "mistral:7b"
+
+        asyncio.create_task(
+            metrics_manager.log_request(
+                api_key=api_key or "public",
+                api_key_name=api_key_name or ("Public / Web UI" if not api_key else "Unnamed Client"),
+                client_ip=client_ip,
+                endpoint=path,
+                model=model,
+                status_code=response.status_code,
+                latency_ms=latency_ms,
+                prompt_tokens=40 if "image" not in path else 15,
+                completion_tokens=80 if response.status_code == 200 and "image" not in path else 0
+            )
+        )
+
+    return response
 
 ###############################################################################
 # HELPER FUNCTIONS
@@ -1651,7 +1850,11 @@ async def status():
 
 @app.get("/api/usage")
 async def api_usage():
-    return JSONResponse({"status": "ok", "usage": "unlimited"})
+    return JSONResponse({
+        "status": "ok",
+        "kpis": metrics_manager.get_kpi_stats(),
+        "keys_count": len(API_KEYS)
+    })
 
 
 ###############################################################################
