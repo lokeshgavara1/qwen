@@ -433,6 +433,13 @@ function renderWorkersGrid(workers) {
     return;
   }
 
+  // Dynamically update header live nodes badge
+  const onlineCount = workers.filter((w) => w.online).length;
+  const badgeText = document.getElementById("clusterNodesBadgeText");
+  if (badgeText) {
+    badgeText.textContent = `${onlineCount}/${workers.length} Nodes Live`;
+  }
+
   container.innerHTML = workers
     .map((w) => {
       const isOnline = w.online;

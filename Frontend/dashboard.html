@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/dashboard.css">
+  <link rel="stylesheet" href="/css/dashboard.css?v=8">
 </head>
 <body>
   <div class="dashboard-wrapper">
@@ -25,8 +25,8 @@
           <h1>CUTM AI Gateway Telemetry</h1>
           <div class="brand-sub">
             <span>Cluster Production v3.0</span>
-            <span class="badge-live">
-              <span class="pulse-dot"></span> 11/11 Nodes Live
+            <span class="badge-live" id="clusterNodesBadge">
+              <span class="pulse-dot"></span> <span id="clusterNodesBadgeText">6/6 Nodes Live</span>
             </span>
             <span style="color: var(--text-muted);">&bull;</span>
             <span style="color: var(--text-secondary);" id="currentTime">Live Sync</span>
@@ -315,6 +315,6 @@
     </div>
   </div>
 
-  <script src="/js/dashboard.js"></script>
+  <script src="/js/dashboard.js?v=8"></script>
 </body>
 </html>

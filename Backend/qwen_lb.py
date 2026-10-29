@@ -1437,26 +1437,73 @@ async def _evaluate_test_submission(
         )
 
 
+UNATTEMPTED_INDICATORS = {
+    "",
+    "nothing was submitted",
+    "nothing was submitted.",
+    "not attempted",
+    "unattempted",
+    "no answer",
+    "no response",
+    "none",
+    "n/a",
+    "null",
+    "no speech was heard in this recording",
+    "no speech was heard in this recording.",
+    "no transcript recorded",
+    "no transcript recorded.",
+    "0 spoken words",
+}
+
+def _is_unattempted(text: Optional[str]) -> bool:
+    """Detects if a candidate response is empty, whitespace, or an unattempted placeholder."""
+    if text is None:
+        return True
+    cleaned = str(text).strip().lower()
+    if not cleaned or cleaned in UNATTEMPTED_INDICATORS:
+        return True
+    stripped = cleaned.strip(".!?-_ \t\r\n")
+    if not stripped or stripped in UNATTEMPTED_INDICATORS:
+        return True
+    return False
+
+
 @app.post("/api/tests/reading", tags=["Language Assessment"])
 async def evaluate_reading_test(request: Request):
     """
     Evaluates Reading test answers (passage comprehension, questions, vocabulary).
     Requires JSON: { "passage": "...", "answers": "..." }
+    Gracefully scores unattempted answers as Grade 0 (Not Attempted).
     """
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    conv_id = body.get("conversation_id")
-    passage = str(body.get("passage", "")).strip()
-    answers = str(body.get("answers", "")).strip()
-    prompt = str(body.get("prompt", "")).strip()
+    conv_id = body.get("conversation_id") or f"conv_{secrets.token_hex(12)}"
+    passage = str(body.get("passage", "") or body.get("prompt", "") or body.get("text", "")).strip()
+    answers = str(body.get("answers", "") or body.get("submission", "") or body.get("answer", "") or body.get("text", "")).strip()
 
     if not passage:
-        return JSONResponse({"error": "Missing required field: 'passage' cannot be empty."}, status_code=400)
-    if not answers:
-        return JSONResponse({"error": "Missing required field: 'answers' cannot be empty."}, status_code=400)
+        passage = "Reading Comprehension Passage"
+
+    if _is_unattempted(answers):
+        unattempted_eval = (
+            "Grade: 0 (Not Attempted)\n"
+            "Explanation: Candidate did not submit any answers for this reading task."
+        )
+        conversation_memory.set_last_response(conv_id, unattempted_eval, "Unattempted reading task")
+        return JSONResponse(
+            content={
+                "test_type": "reading",
+                "evaluation": unattempted_eval,
+                "model": "mistral:7b",
+                "server": "gateway",
+                "latency_ms": 0.0,
+                "conversation_id": conv_id,
+            },
+            headers={"X-Server": "gateway", "X-Conversation-ID": conv_id, "X-Test-Type": "reading"}
+        )
 
     eval_prompt = (
         f"READING PASSAGE:\n{passage}\n\n"
@@ -1479,21 +1526,41 @@ async def evaluate_writing_test(request: Request):
     """
     Evaluates Writing test submissions (essays, reports).
     Requires JSON: { "task_prompt": "...", "essay": "..." }
+    Gracefully scores unattempted essays as Band 0.0 without throwing 400.
     """
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    conv_id = body.get("conversation_id")
-    essay = str(body.get("essay", "") or body.get("submission", "")).strip()
-    task_prompt = str(body.get("task_prompt", "")).strip()
-    prompt = str(body.get("prompt", "")).strip()
+    conv_id = body.get("conversation_id") or f"conv_{secrets.token_hex(12)}"
+    essay = str(body.get("essay", "") or body.get("submission", "") or body.get("answer", "") or body.get("text", "")).strip()
+    task_prompt = str(body.get("task_prompt", "") or body.get("prompt", "") or body.get("question", "")).strip()
 
     if not task_prompt:
-        return JSONResponse({"error": "Missing required field: 'task_prompt' cannot be empty."}, status_code=400)
-    if not essay:
-        return JSONResponse({"error": "Missing required field: 'essay' cannot be empty."}, status_code=400)
+        task_prompt = "IELTS Writing Task"
+
+    if _is_unattempted(essay):
+        unattempted_eval = (
+            "Overall Band: 0.0\n"
+            "Task Achievement: 0.0\n"
+            "Coherence and Cohesion: 0.0\n"
+            "Lexical Resource: 0.0\n"
+            "Grammatical Range and Accuracy: 0.0\n"
+            "Feedback: Task was not attempted. No response was submitted by the candidate."
+        )
+        conversation_memory.set_last_response(conv_id, unattempted_eval, "Unattempted writing task")
+        return JSONResponse(
+            content={
+                "test_type": "writing",
+                "evaluation": unattempted_eval,
+                "model": "mistral:7b",
+                "server": "gateway",
+                "latency_ms": 0.0,
+                "conversation_id": conv_id,
+            },
+            headers={"X-Server": "gateway", "X-Conversation-ID": conv_id, "X-Test-Type": "writing"}
+        )
 
     eval_prompt = (
         f"WRITING PROMPT / TOPIC:\n{task_prompt}\n\n"
@@ -1520,21 +1587,37 @@ async def evaluate_listening_test(request: Request):
     """
     Evaluates Listening test answers against audio transcript.
     Requires JSON: { "transcript": "...", "answers": "..." }
+    Gracefully scores unattempted answers as Score 0/0.
     """
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    conv_id = body.get("conversation_id")
-    transcript = str(body.get("transcript", "")).strip()
-    answers = str(body.get("answers", "")).strip()
-    prompt = str(body.get("prompt", "")).strip()
+    conv_id = body.get("conversation_id") or f"conv_{secrets.token_hex(12)}"
+    transcript = str(body.get("transcript", "") or body.get("prompt", "") or body.get("text", "")).strip()
+    answers = str(body.get("answers", "") or body.get("submission", "") or body.get("answer", "") or body.get("text", "")).strip()
 
     if not transcript:
-        return JSONResponse({"error": "Missing required field: 'transcript' cannot be empty."}, status_code=400)
-    if not answers:
-        return JSONResponse({"error": "Missing required field: 'answers' cannot be empty."}, status_code=400)
+        transcript = "Listening Audio Transcript"
+
+    if _is_unattempted(answers):
+        unattempted_eval = (
+            "Score: 0/0\n"
+            "Explanation: Candidate did not submit any answers for this listening task."
+        )
+        conversation_memory.set_last_response(conv_id, unattempted_eval, "Unattempted listening task")
+        return JSONResponse(
+            content={
+                "test_type": "listening",
+                "evaluation": unattempted_eval,
+                "model": "mistral:7b",
+                "server": "gateway",
+                "latency_ms": 0.0,
+                "conversation_id": conv_id,
+            },
+            headers={"X-Server": "gateway", "X-Conversation-ID": conv_id, "X-Test-Type": "listening"}
+        )
 
     eval_prompt = (
         f"AUDIO TRANSCRIPT:\n{transcript}\n\n"
@@ -1557,21 +1640,41 @@ async def evaluate_speaking_test(request: Request):
     """
     Evaluates candidate Speaking responses (transcribed speech).
     Requires JSON: { "topic": "...", "transcript": "..." }
+    Gracefully scores unattempted / silent recordings as Estimated Band 0.0 without throwing 400.
     """
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    conv_id = body.get("conversation_id")
-    transcript = str(body.get("transcript", "")).strip()
-    topic = str(body.get("topic", "")).strip()
-    prompt = str(body.get("prompt", "")).strip()
+    conv_id = body.get("conversation_id") or f"conv_{secrets.token_hex(12)}"
+    transcript = str(body.get("transcript", "") or body.get("submission", "") or body.get("text", "") or body.get("answer", "")).strip()
+    topic = str(body.get("topic", "") or body.get("prompt", "") or body.get("question", "") or body.get("task_prompt", "")).strip()
 
     if not topic:
-        return JSONResponse({"error": "Missing required field: 'topic' cannot be empty."}, status_code=400)
-    if not transcript:
-        return JSONResponse({"error": "Missing required field: 'transcript' cannot be empty."}, status_code=400)
+        topic = "IELTS Speaking Task"
+
+    if _is_unattempted(transcript):
+        unattempted_eval = (
+            "Estimated Band: 0.0\n"
+            "Fluency and Coherence: 0.0\n"
+            "Lexical Resource: 0.0\n"
+            "Grammatical Accuracy: 0.0\n"
+            "Topical Relevance: 0.0\n"
+            "Feedback: Task was not attempted. No spoken response was recorded for this question."
+        )
+        conversation_memory.set_last_response(conv_id, unattempted_eval, "Unattempted speaking task")
+        return JSONResponse(
+            content={
+                "test_type": "speaking",
+                "evaluation": unattempted_eval,
+                "model": "mistral:7b",
+                "server": "gateway",
+                "latency_ms": 0.0,
+                "conversation_id": conv_id,
+            },
+            headers={"X-Server": "gateway", "X-Conversation-ID": conv_id, "X-Test-Type": "speaking"}
+        )
 
     eval_prompt = (
         f"SPEAKING TOPIC / QUESTION:\n{topic}\n\n"
