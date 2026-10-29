@@ -94,7 +94,7 @@ SERVERS = {
         "priority": 3,
     },
     "reasoning": {
-        "url": "http://172.16.8.4:11434",
+        "url": "http://172.16.8.154:11434",
         "models": ["mistral:7b", "qwen2.5vl:7b"],
         "priority": 4,
     },
