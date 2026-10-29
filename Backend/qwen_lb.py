@@ -421,26 +421,34 @@ class SmartScheduler:
 ###############################################################################
 
 async def ping_server(role: str, state: Dict):
-    t0 = time.perf_counter()
-    try:
-        res = await http_client.get(f"{state['url']}/api/tags", timeout=0.8)
-        if res.status_code == 200:
-            elapsed = round((time.perf_counter() - t0) * 1000, 1)
-            state["online"] = True
-            state["latency"] = elapsed
-            state["last_seen"] = datetime.now().isoformat()
-            try:
-                tags = res.json().get("models", [])
-                live_models = [m["name"] for m in tags if "name" in m]
-                if live_models:
-                    state["models"] = list(set(state["models"] + live_models))
-            except Exception:
-                pass
-            return True
-    except Exception:
-        pass
-    state["online"] = False
-    return False
+    state.setdefault("fail_count", 0)
+    for attempt in range(2):
+        t0 = time.perf_counter()
+        timeout_sec = 2.5 if attempt == 0 else 3.5
+        try:
+            res = await http_client.get(f"{state['url']}/api/tags", timeout=timeout_sec)
+            if res.status_code == 200:
+                elapsed = round((time.perf_counter() - t0) * 1000, 1)
+                state["online"] = True
+                state["latency"] = elapsed
+                state["fail_count"] = 0
+                state["last_seen"] = datetime.now().isoformat()
+                try:
+                    tags = res.json().get("models", [])
+                    live_models = [m["name"] for m in tags if "name" in m]
+                    if live_models:
+                        state["models"] = list(set(state["models"] + live_models))
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            pass
+
+    state["fail_count"] += 1
+    # Only mark offline if it fails 2 consecutive checks, or was never seen online
+    if state["fail_count"] >= 2 or not state.get("last_seen"):
+        state["online"] = False
+    return state["online"]
 
 async def check_server_health_all():
     tasks = [ping_server(role, state) for role, state in SERVER_STATE.items()]
