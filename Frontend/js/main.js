@@ -236,7 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const health = await getHealth();
       const onlineCount = Object.values(health.servers || {}).filter(Boolean).length;
-      const total = Object.keys(health.servers || {}).length || 9;
+      const total = Object.keys(health.servers || {}).length || 6;
 
       if (els.connectionDot) els.connectionDot.classList.add('online');
       if (els.connectionText) els.connectionText.textContent = `Connected · ${onlineCount}/${total} workers`;

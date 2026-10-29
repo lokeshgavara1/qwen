@@ -73,11 +73,6 @@ REMOTE_IMAGE_SERVER = os.getenv("REMOTE_IMAGE_SERVER", "http://172.16.8.170:8000
 ###############################################################################
 
 SERVERS = {
-    "local": {
-        "url": "http://127.0.0.1:11434",
-        "models": ["mistral:7b", "qwen2.5vl:7b"],
-        "priority": 1,
-    },
     "gpu_workstation": {
         "url": "http://172.16.8.170:11434",
         "models": ["mistral:7b", "qwen2.5vl:7b"],
@@ -85,17 +80,17 @@ SERVERS = {
     },
     "server1": {
         "url": "http://172.16.8.253:11434",
-        "models": ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b"],
+        "models": ["mistral:7b", "qwen2.5vl:7b"],
         "priority": 2,
     },
     "coding": {
         "url": "http://172.16.11.231:11434",
-        "models": ["mistral:7b", "qwen2.5-coder:32b", "qwen3:32b"],
+        "models": ["mistral:7b", "qwen2.5-coder:32b", "qwen3:32b", "qwen3:30b-a3b"],
         "priority": 3,
     },
     "reasoning": {
         "url": "http://172.16.8.154:11434",
-        "models": ["mistral:7b", "qwen2.5vl:7b"],
+        "models": ["mistral:latest", "mistral:7b", "qwen2.5vl:7b"],
         "priority": 4,
     },
     "server2": {
@@ -103,30 +98,10 @@ SERVERS = {
         "models": ["mistral:7b", "qwen2.5vl:7b"],
         "priority": 5,
     },
-    "server3": {
-        "url": "http://172.16.8.251:11434",
-        "models": ["mistral:7b"],
-        "priority": 6,
-    },
-    "server4": {
-        "url": "http://172.16.8.112:11434",
-        "models": ["mistral:7b"],
-        "priority": 7,
-    },
-    "server5": {
-        "url": "http://172.16.8.157:11434",
-        "models": ["mistral:7b"],
-        "priority": 8,
-    },
-    "server6": {
-        "url": "http://172.16.8.154:11434",
-        "models": ["mistral:7b"],
-        "priority": 9,
-    },
     "vision": {
         "url": "http://172.16.8.249:11434",
-        "models": ["mistral:7b", "qwen2.5vl:7b"],
-        "priority": 10,
+        "models": ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "qwen3:30b-a3b"],
+        "priority": 6,
     },
 }
 
@@ -377,7 +352,9 @@ class SmartScheduler:
     def select_worker(model: str) -> Optional[Dict]:
         candidates = SmartScheduler.get_available_workers(model)
         if not candidates:
-            # Fallback 1: local worker
+            # Fallback 1: primary GPU workstation
+            if SERVER_STATE.get("gpu_workstation", {}).get("online"):
+                return {"url": SERVER_STATE["gpu_workstation"]["url"], "role": "gpu_workstation"}
             if SERVER_STATE.get("local", {}).get("online"):
                 return {"url": SERVER_STATE["local"]["url"], "role": "local"}
             # Fallback 2: any online server
@@ -386,7 +363,9 @@ class SmartScheduler:
                 return {"url": SERVER_STATE[any_online[0]]["url"], "role": any_online[0]}
             return None
 
-        # Prefer local GPU worker when available for instant sub-second responses
+        # Prefer dedicated GPU workstation when available for instant sub-second responses
+        if "gpu_workstation" in candidates and SERVER_STATE.get("gpu_workstation", {}).get("queue", 0) < 2:
+            return {"url": SERVER_STATE["gpu_workstation"]["url"], "role": "gpu_workstation"}
         if "local" in candidates and SERVER_STATE.get("local", {}).get("queue", 0) < 2:
             return {"url": SERVER_STATE["local"]["url"], "role": "local"}
 
