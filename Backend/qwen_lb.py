@@ -342,10 +342,25 @@ def log(msg: str):
 
 class SmartScheduler:
     @staticmethod
+    def normalize_model(model: str) -> Set[str]:
+        m = (model or "").lower().strip()
+        aliases = {m}
+        if m in ("mistral:7b", "mistral:latest", "mistral"):
+            aliases.update(["mistral:7b", "mistral:latest", "mistral"])
+        elif m in ("qwen2.5vl:7b", "qwen2.5vl:latest", "qwen2.5vl"):
+            aliases.update(["qwen2.5vl:7b", "qwen2.5vl:latest", "qwen2.5vl"])
+        elif m in ("qwen2.5-coder:32b", "qwen2.5-coder:latest", "qwen2.5-coder"):
+            aliases.update(["qwen2.5-coder:32b", "qwen2.5-coder:latest", "qwen2.5-coder"])
+        elif m in ("qwen3:32b", "qwen3:latest", "qwen3", "qwen3:30b-a3b"):
+            aliases.update(["qwen3:32b", "qwen3:latest", "qwen3", "qwen3:30b-a3b"])
+        return aliases
+
+    @staticmethod
     def get_available_workers(model: str) -> List[str]:
+        req_aliases = SmartScheduler.normalize_model(model)
         return [
             role for role, s in SERVER_STATE.items()
-            if s["online"] and model in s["models"]
+            if s["online"] and any(alias in s["models"] for alias in req_aliases)
         ]
 
     @staticmethod
@@ -1057,6 +1072,15 @@ async def generate(request: Request):
 
         key_status = "WITH KEY" if api_key else "PUBLIC"
         log(f"[{role.upper()}] Request: model={model}, tokens<={max_tokens}, {key_status}, conv={conversation_id}")
+
+        # Match target worker's exact loaded model tag if an alias is used
+        worker_models = SERVER_STATE.get(role, {}).get("models", [])
+        if body.get("model") not in worker_models:
+            aliases = SmartScheduler.normalize_model(body.get("model", ""))
+            for wm in worker_models:
+                if wm in aliases:
+                    body["model"] = wm
+                    break
 
         # Streaming response
         if stream:
