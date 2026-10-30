@@ -36,7 +36,21 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 import httpx
 
-import image_generator
+try:
+    import image_generator
+except ImportError:
+    try:
+        from Backend import image_generator
+    except Exception:
+        image_generator = None
+
+def is_image_generator_available() -> bool:
+    if image_generator is None:
+        return False
+    try:
+        return bool(image_generator.is_available())
+    except Exception:
+        return False
 
 try:
     from metrics_manager import metrics_manager
@@ -236,7 +250,7 @@ STATS = {
 }
 
 http_client = httpx.AsyncClient(
-    timeout=httpx.Timeout(connect=3.0, read=120.0, write=120.0, pool=120.0)
+    timeout=httpx.Timeout(connect=5.0, read=120.0, write=120.0, pool=120.0)
 )
 
 ###############################################################################
@@ -364,35 +378,32 @@ class SmartScheduler:
         ]
 
     @staticmethod
-    def select_worker(model: str) -> Optional[Dict]:
-        candidates = SmartScheduler.get_available_workers(model)
-        if not candidates:
-            # Fallback 1: primary GPU workstation
+    def get_ordered_candidates(model: str) -> List[str]:
+        available = SmartScheduler.get_available_workers(model)
+        if not available:
+            # Fallback 1: primary GPU workstation if online
             if SERVER_STATE.get("gpu_workstation", {}).get("online"):
-                return {"url": SERVER_STATE["gpu_workstation"]["url"], "role": "gpu_workstation"}
-            if SERVER_STATE.get("local", {}).get("online"):
-                return {"url": SERVER_STATE["local"]["url"], "role": "local"}
-            # Fallback 2: any online server
-            any_online = [role for role, s in SERVER_STATE.items() if s["online"]]
-            if any_online:
-                return {"url": SERVER_STATE[any_online[0]]["url"], "role": any_online[0]}
+                available = ["gpu_workstation"]
+            elif SERVER_STATE.get("local", {}).get("online"):
+                available = ["local"]
+            else:
+                available = [role for role, s in SERVER_STATE.items() if s["online"]]
+
+        def candidate_score(role: str) -> Tuple[int, int, float, int]:
+            st = SERVER_STATE.get(role, {})
+            # Prefer GPU workstation if its queue is reasonable (< 5)
+            is_gpu = (role == "gpu_workstation")
+            tier = 0 if (is_gpu and st.get("queue", 0) < 5) else 1
+            return (tier, st.get("queue", 0), st.get("latency", 0.0), st.get("priority", 99))
+
+        return sorted(available, key=candidate_score)
+
+    @staticmethod
+    def select_worker(model: str) -> Optional[Dict]:
+        candidates = SmartScheduler.get_ordered_candidates(model)
+        if not candidates:
             return None
-
-        # Prefer dedicated GPU workstation when available for instant sub-second responses
-        if "gpu_workstation" in candidates and SERVER_STATE.get("gpu_workstation", {}).get("queue", 0) < 2:
-            return {"url": SERVER_STATE["gpu_workstation"]["url"], "role": "gpu_workstation"}
-        if "local" in candidates and SERVER_STATE.get("local", {}).get("queue", 0) < 2:
-            return {"url": SERVER_STATE["local"]["url"], "role": "local"}
-
-        # Pick candidate with lowest queue, then lowest latency, then priority
-        best_role = min(
-            candidates,
-            key=lambda r: (
-                SERVER_STATE[r]["queue"],
-                SERVER_STATE[r]["latency"],
-                SERVER_STATE[r]["priority"]
-            )
-        )
+        best_role = candidates[0]
         return {"url": SERVER_STATE[best_role]["url"], "role": best_role}
 
     @staticmethod
@@ -400,15 +411,23 @@ class SmartScheduler:
         if role in SERVER_STATE:
             SERVER_STATE[role]["queue"] += 1
             SERVER_STATE[role]["requests"] += 1
+            SERVER_STATE[role]["last_active_time"] = time.time()
 
     @staticmethod
     def finish_request(role: str, latency_ms: float = 0.0):
         if role in SERVER_STATE:
             SERVER_STATE[role]["queue"] = max(0, SERVER_STATE[role]["queue"] - 1)
+            SERVER_STATE[role]["last_active_time"] = time.time()
             if latency_ms > 0:
                 # Exponential moving average for latency
                 curr = SERVER_STATE[role]["latency"]
                 SERVER_STATE[role]["latency"] = round(latency_ms if curr == 0 else (curr * 0.7 + latency_ms * 0.3), 1)
+
+    @staticmethod
+    def reset_all_queues():
+        for role, s in SERVER_STATE.items():
+            s["queue"] = 0
+            s["last_active_time"] = time.time()
 
 ###############################################################################
 # HEALTH CHECK & WARMUP
@@ -427,6 +446,11 @@ async def ping_server(role: str, state: Dict):
                 state["latency"] = elapsed
                 state["fail_count"] = 0
                 state["last_seen"] = datetime.now().isoformat()
+                # Auto-decay stuck queue counters if no active request ran recently
+                if state.get("queue", 0) > 0:
+                    last_active = state.get("last_active_time", 0)
+                    if time.time() - last_active > 30:
+                        state["queue"] = 0
                 try:
                     tags = res.json().get("models", [])
                     live_models = [m["name"] for m in tags if "name" in m]
@@ -505,7 +529,7 @@ async def lifespan(app: FastAPI):
 
     async def prewarm_image_pipeline():
         await asyncio.sleep(1.5)
-        if image_generator.is_available():
+        if is_image_generator_available():
             try:
                 log("Pre-warming FLUX image generation pipeline in background...")
                 await asyncio.to_thread(image_generator.get_pipeline)
@@ -733,6 +757,13 @@ async def api_dashboard_logs(request: Request):
     logs = metrics_manager.get_recent_logs(limit=limit, search=search, status_filter=status_filter, key_filter=key_filter)
     return {"logs": logs}
 
+@app.post("/api/dashboard/reset-queues")
+@app.get("/api/dashboard/reset-queues")
+async def api_dashboard_reset_queues():
+    SmartScheduler.reset_all_queues()
+    log("[ADMIN] All worker queues reset to 0 [OK]")
+    return {"success": True, "message": "All cluster worker queues have been reset to 0"}
+
 ###############################################################################
 # CLIENT IP HELPER
 ###############################################################################
@@ -792,7 +823,14 @@ async def telemetry_middleware(request: Request, call_next):
             key_info["last_used"] = datetime.now().isoformat()
             asyncio.create_task(save_api_keys_async(API_KEYS))
 
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        log(f"[MIDDLEWARE ERROR] Uncaught exception processing {path}: {e}")
+        return JSONResponse(
+            {"error": f"Internal Gateway Error: {str(e)}", "path": path},
+            status_code=500
+        )
     latency_ms = (time.time() - start_time) * 1000.0
 
     # Asynchronously log telemetry for all API routes (skip static assets & dashboard polling)
@@ -939,7 +977,7 @@ async def generate(request: Request):
                     break
 
             gen_result = None
-            if image_generator.is_available():
+            if is_image_generator_available():
                 try:
                     gen_result = await image_generator.generate_image_async(
                         prompt=clean_prompt or prompt,
@@ -978,7 +1016,7 @@ async def generate(request: Request):
                 conversation_memory.set_last_response(conversation_id, f"[GENERATED IMAGE]: {gen_result.get('prompt', prompt)}", prompt)
                 log(f"[IMAGE_GEN] Generated '{gen_result.get('prompt', prompt)[:35]}...' in {elapsed}ms (seed={gen_result.get('seed')})")
 
-                server_label = "local-diffusion" if image_generator.is_available() else "gpu_workstation-diffusion"
+                server_label = "local-diffusion" if is_image_generator_available() else "gpu_workstation-diffusion"
 
                 if stream:
                     async def img_stream():
@@ -1025,16 +1063,24 @@ async def generate(request: Request):
 
         # CRITICAL FIX: Pass inference parameters inside Ollama's "options" object
         max_tokens = MAX_TOKENS_BY_TYPE.get(intent, 200)
-        body["keep_alive"] = "24h"
-        if "options" not in body or not isinstance(body["options"], dict):
-            body["options"] = {}
-        body["options"]["num_predict"] = max_tokens
-        body["options"]["temperature"] = 0.3
-        body["options"]["top_p"] = 0.8
-        body["options"]["repeat_penalty"] = 1.1
-        body["options"]["num_ctx"] = 2048
-        body["options"]["f16_kv"] = True
-        body["options"]["num_thread"] = 8
+
+        # Prepare clean, standard Ollama request payload
+        ollama_payload = {
+            "model": model,
+            "prompt": ollama_prompt,
+            "stream": stream,
+            "keep_alive": "24h",
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": 0.3,
+                "top_p": 0.8,
+                "repeat_penalty": 1.1,
+            }
+        }
+        if clean_images:
+            ollama_payload["images"] = clean_images
+        if "system" in body and body["system"]:
+            ollama_payload["system"] = body["system"]
 
         # Check cache (non-streaming only)
         cached = cache.get(model, ollama_prompt)
@@ -1055,9 +1101,9 @@ async def generate(request: Request):
                 headers={"X-Server": "cache", "X-Model": model, "X-Conversation-ID": conversation_id}
             )
 
-        # Select healthiest online worker
-        worker = SmartScheduler.select_worker(model)
-        if not worker:
+        # Select prioritized candidates with automatic cluster failover
+        candidates = SmartScheduler.get_ordered_candidates(model)
+        if not candidates:
             STATS["failed_requests"] += 1
             return JSONResponse(
                 {"error": f"No online server currently available for model {model}", "conversation_id": conversation_id},
@@ -1065,107 +1111,144 @@ async def generate(request: Request):
                 headers={"X-Conversation-ID": conversation_id}
             )
 
-        role = worker["role"]
-        url = worker["url"]
-        SmartScheduler.start_request(role)
-        req_start = time.perf_counter()
-
-        key_status = "WITH KEY" if api_key else "PUBLIC"
-        log(f"[{role.upper()}] Request: model={model}, tokens<={max_tokens}, {key_status}, conv={conversation_id}")
-
-        # Match target worker's exact loaded model tag if an alias is used
-        worker_models = SERVER_STATE.get(role, {}).get("models", [])
-        if body.get("model") not in worker_models:
-            aliases = SmartScheduler.normalize_model(body.get("model", ""))
-            for wm in worker_models:
-                if wm in aliases:
-                    body["model"] = wm
-                    break
-
-        # Streaming response
+        # Streaming response with automatic multi-worker failover
         if stream:
             async def stream_generator():
+                success = False
                 final_tokens = None
                 accumulated_text = []
-                try:
-                    async with http_client.stream(
-                        "POST", f"{url}/api/generate", json=body, timeout=120.0
-                    ) as response:
-                        response.raise_for_status()
-                        async for chunk in response.aiter_bytes():
-                            if b'"response"' in chunk or b'"eval_count"' in chunk:
-                                try:
-                                    for line in chunk.split(b"\n"):
-                                        if line.strip():
-                                            cd = json.loads(line.decode("utf-8", errors="ignore"))
-                                            if "response" in cd:
-                                                accumulated_text.append(cd["response"])
-                                            if "eval_count" in cd:
-                                                final_tokens = cd["eval_count"]
-                                except Exception:
-                                    pass
-                            yield chunk
-                except Exception as e:
-                    SERVER_STATE[role]["errors"] += 1
+
+                for role in candidates:
+                    url = SERVER_STATE[role]["url"]
+                    SmartScheduler.start_request(role)
+                    req_start = time.perf_counter()
+                    key_status = "WITH KEY" if api_key else "PUBLIC"
+                    log(f"[{role.upper()}] Streaming attempt: model={model}, {key_status}, conv={conversation_id}")
+
+                    # Match worker's exact model tag if an alias is used
+                    target_payload = dict(ollama_payload)
+                    worker_models = SERVER_STATE.get(role, {}).get("models", [])
+                    if target_payload["model"] not in worker_models:
+                        aliases = SmartScheduler.normalize_model(target_payload["model"])
+                        for wm in worker_models:
+                            if wm in aliases:
+                                target_payload["model"] = wm
+                                break
+
+                    try:
+                        async with http_client.stream(
+                            "POST", f"{url}/api/generate", json=target_payload, timeout=120.0
+                        ) as response:
+                            if response.status_code != 200:
+                                err_bytes = await response.aread()
+                                log(f"[{role}] Worker returned HTTP {response.status_code}: {err_bytes.decode('utf-8', errors='ignore')[:100]}")
+                                SmartScheduler.finish_request(role)
+                                continue
+
+                            async for chunk in response.aiter_bytes():
+                                if b'"response"' in chunk or b'"eval_count"' in chunk:
+                                    try:
+                                        for line in chunk.split(b"\n"):
+                                            if line.strip():
+                                                cd = json.loads(line.decode("utf-8", errors="ignore"))
+                                                if "response" in cd:
+                                                    accumulated_text.append(cd["response"])
+                                                if "eval_count" in cd:
+                                                    final_tokens = cd["eval_count"]
+                                    except Exception:
+                                        pass
+                                yield chunk
+
+                            success = True
+                            elapsed = round((time.perf_counter() - req_start) * 1000, 1)
+                            SmartScheduler.finish_request(role, elapsed)
+                            full_resp = "".join(accumulated_text)
+                            if full_resp:
+                                conversation_memory.set_last_response(conversation_id, full_resp, prompt)
+                            break
+                    except Exception as e:
+                        SERVER_STATE[role]["errors"] += 1
+                        SmartScheduler.finish_request(role)
+                        log(f"[FAILOVER] Worker {role} failed during stream: {e}. Trying next candidate...")
+                        continue
+
+                if not success:
                     STATS["failed_requests"] += 1
-                    elapsed = round((time.perf_counter() - req_start) * 1000, 1)
-                    log(f"Stream error on {role}: {e}")
-                else:
-                    elapsed = round((time.perf_counter() - req_start) * 1000, 1)
-                    full_resp = "".join(accumulated_text)
-                    if full_resp:
-                        conversation_memory.set_last_response(conversation_id, full_resp, prompt)
-                finally:
-                    elapsed = round((time.perf_counter() - req_start) * 1000, 1)
-                    SmartScheduler.finish_request(role, elapsed)
+                    err_payload = {
+                        "model": model,
+                        "response": "\u26a0\ufe0f All AI cluster workers are currently busy or unavailable. Please try again in a few moments.",
+                        "done": True,
+                        "conversation_id": conversation_id,
+                    }
+                    yield (json.dumps(err_payload) + "\n").encode("utf-8")
 
             return StreamingResponse(
                 stream_generator(),
                 media_type="application/x-ndjson",
-                headers={"X-Server": role, "X-Model": model, "X-Conversation-ID": conversation_id},
+                headers={"X-Server": candidates[0], "X-Model": model, "X-Conversation-ID": conversation_id},
             )
 
-        # Non-streaming response
-        try:
-            response = await http_client.post(f"{url}/api/generate", json=body, timeout=120.0)
-            data = response.json()
-            elapsed = round((time.perf_counter() - req_start) * 1000, 1)
-            SmartScheduler.finish_request(role, elapsed)
+        # Non-streaming response with automatic multi-worker failover
+        for role in candidates:
+            url = SERVER_STATE[role]["url"]
+            SmartScheduler.start_request(role)
+            req_start = time.perf_counter()
 
-            resp_text = data.get("response", "")
-            if resp_text:
-                conversation_memory.set_last_response(conversation_id, resp_text, prompt)
+            target_payload = dict(ollama_payload)
+            worker_models = SERVER_STATE.get(role, {}).get("models", [])
+            if target_payload["model"] not in worker_models:
+                aliases = SmartScheduler.normalize_model(target_payload["model"])
+                for wm in worker_models:
+                    if wm in aliases:
+                        target_payload["model"] = wm
+                        break
 
-            data.update({
-                "_intent": intent,
-                "_model": model,
-                "_server": role,
-                "_cached": False,
-                "_has_api_key": bool(api_key),
-                "conversation_id": conversation_id,
-            })
-            cache.set(model, ollama_prompt, data)
-            log(f"Response from {role}: {data.get('eval_count', 0)} tokens in {elapsed}ms")
+            try:
+                response = await http_client.post(f"{url}/api/generate", json=target_payload, timeout=120.0)
+                if response.status_code != 200:
+                    SmartScheduler.finish_request(role)
+                    continue
 
-            return JSONResponse(
-                content=data,
-                headers={"X-Server": role, "X-Model": model, "X-Conversation-ID": conversation_id}
-            )
-        except Exception as e:
-            SERVER_STATE[role]["errors"] += 1
-            STATS["failed_requests"] += 1
-            SmartScheduler.finish_request(role)
-            log(f"Error on {role}: {e}")
-            return JSONResponse(
-                {"error": str(e), "server": role, "conversation_id": conversation_id},
-                status_code=500,
-                headers={"X-Conversation-ID": conversation_id}
-            )
+                data = response.json()
+                elapsed = round((time.perf_counter() - req_start) * 1000, 1)
+                SmartScheduler.finish_request(role, elapsed)
+
+                resp_text = data.get("response", "")
+                if resp_text:
+                    conversation_memory.set_last_response(conversation_id, resp_text, prompt)
+
+                data.update({
+                    "_intent": intent,
+                    "_model": model,
+                    "_server": role,
+                    "_cached": False,
+                    "_has_api_key": bool(api_key),
+                    "conversation_id": conversation_id,
+                })
+                cache.set(model, ollama_prompt, data)
+                log(f"Response from {role}: {data.get('eval_count', 0)} tokens in {elapsed}ms")
+
+                return JSONResponse(
+                    content=data,
+                    headers={"X-Server": role, "X-Model": model, "X-Conversation-ID": conversation_id}
+                )
+            except Exception as e:
+                SERVER_STATE[role]["errors"] += 1
+                SmartScheduler.finish_request(role)
+                log(f"[FAILOVER] Worker {role} failed during non-stream: {e}. Trying next candidate...")
+                continue
+
+        STATS["failed_requests"] += 1
+        return JSONResponse(
+            {"error": "All AI cluster workers are currently busy or unavailable.", "conversation_id": conversation_id},
+            status_code=503,
+            headers={"X-Conversation-ID": conversation_id}
+        )
 
     except Exception as e:
         STATS["failed_requests"] += 1
         log(f"Gateway Error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": str(e), "conversation_id": locals().get("conversation_id")}, status_code=500)
 
 ###############################################################################
 # SPEECH-TO-TEXT (STT) TRANSCRIPTION ENGINE & ENDPOINTS
@@ -1741,7 +1824,7 @@ async def api_generate_image(request: Request):
         except Exception:
             seed = None
 
-    if not image_generator.is_available():
+    if not is_image_generator_available():
         # Try offloading to GPU workstation
         remote_res = await forward_image_generation(body)
         if remote_res:
@@ -1802,7 +1885,7 @@ async def openai_images_generations(request: Request):
     except Exception:
         w, h = 512, 512
 
-    if not image_generator.is_available():
+    if not is_image_generator_available():
         # Forward to GPU workstation
         try:
             remote_url = f"{REMOTE_IMAGE_SERVER.rstrip('/')}/v1/images/generations"
