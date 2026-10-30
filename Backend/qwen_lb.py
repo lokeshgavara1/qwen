@@ -768,18 +768,22 @@ async def api_dashboard_reset_queues():
 # CLIENT IP HELPER
 ###############################################################################
 
+TRUSTED_PROXIES = {"127.0.0.1", "::1", "localhost", "192.168.5.200", "115.241.211.188"}
+
 def get_client_ip(request: Request) -> str:
     """
     Determines the real client IP.
-    Trusts X-Forwarded-For only for requests arriving from localhost
-    (i.e. behind a local NGINX/reverse-proxy on the same machine).
-    Otherwise uses the direct connection IP to prevent spoofing.
+    Trusts X-Forwarded-For and X-Real-IP for requests arriving from localhost
+    or trusted reverse proxy at 192.168.5.200 (qwen.cutm.ac.in).
     """
     peer = request.client.host if request.client else "unknown"
-    if peer in ("127.0.0.1", "::1", "localhost"):
+    if peer in TRUSTED_PROXIES:
         forwarded_for = request.headers.get("X-Forwarded-For", "")
         if forwarded_for:
             return forwarded_for.split(",")[0].strip()
+        real_ip = request.headers.get("X-Real-IP", "")
+        if real_ip:
+            return real_ip.strip()
     return peer
 
 
