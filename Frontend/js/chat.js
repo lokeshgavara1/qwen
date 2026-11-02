@@ -215,6 +215,7 @@ export class Chat {
 
     let aiText = '';
     let liveBubble = null;
+    let renderPending = false;
 
     try {
       const result = await generateResponse(text, {
@@ -227,8 +228,16 @@ export class Chat {
             this.removeLoadingMessage();
             liveBubble = this.addStreamingBubble();
           }
-          liveBubble.querySelector('.msg-text').innerHTML = formatMessageHtml(aiText);
-          this.scrollToBottom();
+          if (!renderPending) {
+            renderPending = true;
+            requestAnimationFrame(() => {
+              if (liveBubble) {
+                liveBubble.querySelector('.msg-text').innerHTML = formatMessageHtml(aiText);
+                this.scrollToBottom();
+              }
+              renderPending = false;
+            });
+          }
         },
       });
 
