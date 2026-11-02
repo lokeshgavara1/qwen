@@ -88,8 +88,8 @@ REMOTE_IMAGE_SERVER = os.getenv("REMOTE_IMAGE_SERVER", "http://172.16.8.170:8000
 
 SERVERS = {
     "gpu_workstation": {
-        "url": "http://172.16.8.170:11434",
-        "models": ["mistral:7b", "qwen2.5vl:7b"],
+        "url": os.getenv("GPU_WORKSTATION_URL", "http://127.0.0.1:11434"),
+        "models": ["mistral:7b", "qwen2.5vl:7b", "qwen3.8:27b"],
         "priority": 1,
     },
     "server1": {
@@ -361,6 +361,8 @@ class SmartScheduler:
         aliases = {m}
         if m in ("mistral:7b", "mistral:latest", "mistral"):
             aliases.update(["mistral:7b", "mistral:latest", "mistral"])
+        elif m in ("qwen3.8:27b", "qwen3.8:latest", "qwen3.8", "qwen-3.8:27b", "qwen-3.8", "qwen3.8-27b", "qwen38:27b"):
+            aliases.update(["qwen3.8:27b", "qwen3.8:latest", "qwen3.8", "qwen-3.8:27b", "qwen-3.8", "qwen3.8-27b", "qwen38:27b"])
         elif m in ("qwen2.5vl:7b", "qwen2.5vl:latest", "qwen2.5vl"):
             aliases.update(["qwen2.5vl:7b", "qwen2.5vl:latest", "qwen2.5vl"])
         elif m in ("qwen2.5-coder:32b", "qwen2.5-coder:latest", "qwen2.5-coder"):
@@ -887,6 +889,8 @@ def update_stats(intent: str):
 def select_model(intent: str) -> str:
     if intent == VISION:
         return "qwen2.5vl:7b"
+    elif intent in (CODING, REASONING):
+        return "qwen3.8:27b"
     return "mistral:7b"
 
 ###############################################################################
@@ -956,8 +960,12 @@ async def generate(request: Request):
 
         # Respect explicit model if provided and valid, otherwise auto-select
         requested_model = body.get("model")
-        if requested_model and requested_model in ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "flux", "flux-schnell", "flux.1", "stable-diffusion", "sd15", "diffusion", "image-gen"]:
-            model = requested_model
+        valid_models = [
+            "qwen3.8:27b", "qwen3.8", "mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b",
+            "flux", "flux-schnell", "flux.1", "stable-diffusion", "sd15", "diffusion", "image-gen"
+        ]
+        if requested_model and requested_model in valid_models:
+            model = "qwen3.8:27b" if requested_model in ("qwen3.8:27b", "qwen3.8") else requested_model
         else:
             model = select_model(intent)
         body["model"] = model
@@ -1936,7 +1944,7 @@ async def openai_list_models():
     OpenAI-compatible models list endpoint.
     Used by OpenAI SDK (`client.models.list()`) to inspect available models.
     """
-    model_ids = ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "flux-schnell"]
+    model_ids = ["qwen3.8:27b", "mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b", "flux-schnell"]
     data = [
         {
             "id": m,
@@ -1983,8 +1991,8 @@ async def openai_chat_completions(request: Request):
     requested_model = body.get("model", "mistral:7b")
     if requested_model in ("gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4-turbo", "default", "auto", ""):
         model = "mistral:7b"
-    elif requested_model in ["mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b"]:
-        model = requested_model
+    elif requested_model in ["qwen3.8:27b", "qwen3.8", "mistral:7b", "qwen2.5vl:7b", "qwen2.5-coder:32b", "qwen3:32b"]:
+        model = "qwen3.8:27b" if requested_model in ("qwen3.8:27b", "qwen3.8") else requested_model
     else:
         model = "mistral:7b"
     body["model"] = model

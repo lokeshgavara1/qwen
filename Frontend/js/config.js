@@ -19,6 +19,7 @@ export const TARGET_HOST = 'qwen.cutm.ac.in';
 export const AUTO_MODEL = 'auto';
 export const MODEL_OPTIONS = [
   { value: AUTO_MODEL, label: 'Auto (Smart Router)', description: 'Picks the right model per message' },
+  { value: 'qwen3.8:27b', label: 'Qwen 3.8 27B', description: 'Advanced 27B Reasoning, Coding & Math (GPU Native)' },
   { value: 'mistral:7b', label: 'Mistral 7B', description: 'Chat, coding, reasoning' },
   { value: 'qwen2.5vl:7b', label: 'Qwen2.5-VL 7B', description: 'Vision & Multimodal' },
   { value: 'flux', label: '🎨 FLUX.1 [schnell]', description: 'High-Fidelity AI Image Generation' },

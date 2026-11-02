@@ -289,6 +289,7 @@ function renderTrafficChart(traffic) {
 
 // --- Render Model Breakdown List & Donut ---
 const MODEL_COLORS = {
+  "qwen3.8:27b": "#F97316",
   "mistral:7b": "#00F2FE",
   "FLUX.1-schnell": "#8B5CF6",
   "qwen2.5vl:7b": "#10B981",

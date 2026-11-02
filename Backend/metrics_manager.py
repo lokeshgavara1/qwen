@@ -104,6 +104,7 @@ class MetricsManager:
                     ("/api/tests/writing", "mistral:7b", 650, 410),
                     ("/api/tests/speaking/transcribe", "whisper-large-v3", 80, 0),
                     ("/api/generate", "qwen2.5vl:7b", 210, 190),
+                    ("/api/generate", "qwen3.8:27b", 320, 380),
                 ]
 
                 # Insert quota records
